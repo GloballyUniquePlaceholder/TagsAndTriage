@@ -69,6 +69,29 @@
     }
     .status-summary .recheck-flag.ok { background: #eefcf3; color: #1f7a4d; border-color: #b9ebce; }
 
+    .zone-tag {
+      display: inline-block;
+      font-size: 13px;
+      font-weight: 600;
+      color: #2b6cb0;
+      background: #ebf4ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 6px;
+      padding: 4px 10px;
+    }
+    .zone-tag.empty { color: #bbb; background: #f5f5f5; border-color: #eee; font-weight: 500; }
+    .zone-tag.mismatch { color: #9c4a1a; background: #fff2e5; border-color: #fbd0a5; }
+    .zone-action-btn {
+      width: auto;
+      margin: 0;
+      padding: 5px 12px;
+      font-size: 12px;
+      background: #eee;
+      color: #444;
+      border-radius: 5px;
+    }
+    .zone-action-btn:hover { background: #e2e2e2; }
+
     table {
       width: 100%;
       border-collapse: collapse;
@@ -273,7 +296,7 @@
     const patientId = decodeURIComponent(window.location.pathname.split('/').pop());
     document.getElementById('patient-title').textContent = 'Patient: ' + patientId;
 
-    // ============ Recheck form (same logic/validation as main dashboard) ============
+    // ============ Recheck form ============
     const checkinForm = document.getElementById('checkin-form');
 
     checkinForm.addEventListener('change', (e) => {
@@ -376,7 +399,7 @@
       }
     });
 
-    // ============ Treatment form (scoped to this patient) ============
+    // ============ Treatment form ============
     const treatmentForm = document.getElementById('treatment-form');
     treatmentForm.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -431,6 +454,25 @@
     }
     window.markGiven = markGiven;
 
+    // Only rendered when data.priority is truthy — can't be called before a
+    // priority exists, same guard as the main dashboard.
+    async function assignPosition() {
+      const positionNumber = window.prompt('Spot number (zone is set automatically from current priority):');
+      if (!positionNumber) return;
+      const res = await fetch('/api/assign-position', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ patient_id: patientId, position_number: positionNumber.trim() })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || 'Could not assign position.');
+        return;
+      }
+      loadPatient();
+    }
+    window.assignPosition = assignPosition;
+
     // ============ Rendering ============
     function timeAgo(timestamp) {
       if (!timestamp) return '—';
@@ -444,6 +486,20 @@
     function yesNo(val) {
       if (val === null || val === undefined) return '—';
       return val ? 'Yes' : 'No';
+    }
+
+    function renderZone(data) {
+      if (!data.priority) {
+        return `<span class="zone-tag empty">assign a priority first</span>`;
+      }
+      if (!data.zone_position) {
+        return `<span class="zone-tag empty">not assigned</span>
+                <button class="zone-action-btn" onclick="assignPosition()">Assign position</button>`;
+      }
+      const mismatchClass = data.zone_mismatch ? ' mismatch' : '';
+      const label = data.zone_mismatch ? `${data.zone_position} ⚠ priority changed` : data.zone_position;
+      return `<span class="zone-tag${mismatchClass}">${label}</span>
+              <button class="zone-action-btn" onclick="assignPosition()">Move</button>`;
     }
 
     function renderStatusSummary(data) {
@@ -466,6 +522,7 @@
         <span class="meta">Last check: ${timeAgo(data.last_check)}</span>
         ${data.notes ? `<span class="meta">— ${data.notes}</span>` : ''}
         ${recheckHtml}
+        ${renderZone(data)}
       `;
     }
 

@@ -121,6 +121,30 @@
     .badge.green { background: #38a169; }
     .badge.black { background: #4a5568; }
 
+    .zone-cell { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .zone-tag {
+      display: inline-block;
+      font-size: 12px;
+      font-weight: 600;
+      color: #2b6cb0;
+      background: #ebf4ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 6px;
+      padding: 2px 8px;
+    }
+    .zone-tag.empty { color: #bbb; background: #f5f5f5; border-color: #eee; font-weight: 500; }
+    .zone-tag.mismatch { color: #9c4a1a; background: #fff2e5; border-color: #fbd0a5; }
+    .zone-action-btn {
+      width: auto;
+      margin: 0;
+      padding: 3px 9px;
+      font-size: 11px;
+      background: #eee;
+      color: #444;
+      border-radius: 5px;
+    }
+    .zone-action-btn:hover { background: #e2e2e2; }
+
     .notes-cell { font-size: 13px; color: #555; max-width: 220px; }
     .notes-cell.empty { color: #bbb; }
 
@@ -200,6 +224,7 @@
           <label>Patient ID</label>
           <input type="text" id="patient_id" list="checkin-patient-datalist" required autocomplete="off">
           <datalist id="checkin-patient-datalist"></datalist>
+          <div class="hint">Zone position is assigned separately, after priority is calculated below</div>
 
           <label>Can the patient walk?</label>
           <div class="radio-row">
@@ -278,7 +303,7 @@
       <div class="summary ops-row" id="ops-summary"></div>
 
       <div class="filter-row">
-        <input type="text" id="filter-search" placeholder="Search patient ID or injury/notes…">
+        <input type="text" id="filter-search" placeholder="Search patient ID, zone/spot, or notes…">
         <select id="filter-priority">
           <option value="">All priorities</option>
           <option value="red">Red</option>
@@ -297,7 +322,7 @@
 
       <table>
         <thead>
-          <tr><th>Patient ID</th><th>Priority</th><th>Injury / Notes</th><th>Last Check</th><th>Vitals Recheck</th><th>Treatments Due</th></tr>
+          <tr><th>Patient ID</th><th>Priority</th><th>Zone / Spot</th><th>Injury / Notes</th><th>Last Check</th><th>Vitals Recheck</th><th>Treatments Due</th></tr>
         </thead>
         <tbody id="patients"></tbody>
       </table>
@@ -308,7 +333,7 @@
     let latestPatients = [];
     const filters = { search: '', priority: '', treatment: '', recheckOnly: false };
 
-    // ============ Check-in form ============
+    // ============ Check-in form (no zone field — priority isn't known yet) ============
     const checkinForm = document.getElementById('checkin-form');
 
     checkinForm.addEventListener('change', (e) => {
@@ -345,11 +370,7 @@
       return el ? parseInt(el.value) : null;
     }
 
-    // Builds the payload AND validates it matches the branch the form is
-    // actually on — this is what stops an unanswered breathing question from
-    // silently being read as "No" and producing Black by accident.
     function buildCheckinPayload() {
-      const msg = document.getElementById('form-msg');
       const patient_id = document.getElementById('patient_id').value.trim();
       const can_walk = getRadio('can_walk');
 
@@ -366,7 +387,7 @@
       };
 
       if (can_walk === 1) {
-        return { payload }; // Green — no further questions needed
+        return { payload };
       }
 
       const initial_breathing = getRadio('initial_breathing');
@@ -418,7 +439,7 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Request failed');
 
-        msg.textContent = `Saved — priority: ${data.priority}`;
+        msg.textContent = `Saved — priority: ${data.priority}. Assign a zone position from the table now if needed.`;
         msg.className = 'form-msg ok';
         checkinForm.reset();
         document.getElementById('rest-of-form').classList.remove('show');
@@ -482,12 +503,11 @@
       document.getElementById('checkin-patient-datalist').innerHTML = options;
     }
 
-    let latestTreatmentTypes = [];
     async function refreshTreatmentTypes() {
       const res = await fetch('/api/treatment-types');
-      latestTreatmentTypes = await res.json();
+      const types = await res.json();
       document.getElementById('treatment-datalist').innerHTML =
-        latestTreatmentTypes.map(t => `<option value="${t}">`).join('');
+        types.map(t => `<option value="${t}">`).join('');
     }
 
     // ============ Row navigation / quick actions ============
@@ -501,6 +521,26 @@
       goToPatient(patientId);
     }
     window.quickRecheck = quickRecheck;
+
+    // Only ever called for a patient who already has a priority — the button
+    // that triggers this is only rendered once p.priority is truthy.
+    async function assignPosition(event, patientId) {
+      event.stopPropagation();
+      const positionNumber = window.prompt('Spot number (zone is set automatically from current priority):');
+      if (!positionNumber) return;
+      const res = await fetch('/api/assign-position', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ patient_id: patientId, position_number: positionNumber.trim() })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || 'Could not assign position.');
+        return;
+      }
+      refresh();
+    }
+    window.assignPosition = assignPosition;
 
     async function markGiven(event, treatmentId) {
       event.stopPropagation();
@@ -566,12 +606,28 @@
       return `<span class="none-due">in ${recheck.minutes}m</span>`;
     }
 
+    function renderZoneCell(p) {
+      // No priority yet -> zone assignment isn't possible; nothing to show.
+      if (!p.priority) {
+        return `<span class="zone-tag empty">no priority yet</span>`;
+      }
+      if (!p.zone_position) {
+        return `<span class="zone-tag empty">not assigned</span>
+                <button class="zone-action-btn" onclick="assignPosition(event, '${p.patient_id}')">Assign</button>`;
+      }
+      const mismatchClass = p.zone_mismatch ? ' mismatch' : '';
+      const label = p.zone_mismatch ? `${p.zone_position} ⚠` : p.zone_position;
+      return `<span class="zone-tag${mismatchClass}" title="${p.zone_mismatch ? 'Priority changed since this was assigned — reassign after moving the patient' : ''}">${label}</span>
+              <button class="zone-action-btn" onclick="assignPosition(event, '${p.patient_id}')">Move</button>`;
+    }
+
     function renderTable() {
       let patients = [...latestPatients];
 
       if (filters.search) {
         patients = patients.filter(p =>
           p.patient_id.toLowerCase().includes(filters.search) ||
+          (p.zone_position && p.zone_position.toLowerCase().includes(filters.search)) ||
           (p.notes && p.notes.toLowerCase().includes(filters.search))
         );
       }
@@ -591,7 +647,7 @@
 
       const tbody = document.getElementById('patients');
       if (patients.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="6" class="empty-state">No patients match</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="7" class="empty-state">No patients match</td></tr>`;
         return;
       }
 
@@ -618,6 +674,7 @@
           <tr class="patient-row" onclick="goToPatient('${p.patient_id}')">
             <td><strong>${p.patient_id}</strong></td>
             <td><span class="badge ${p.priority}">${p.priority}</span></td>
+            <td><div class="zone-cell">${renderZoneCell(p)}</div></td>
             <td>${notesHtml}</td>
             <td>${timeAgo(p.last_check)}</td>
             <td>${recheckHtml}</td>
