@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Patient Detail</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, Segoe UI, sans-serif;
+      background: #f4f5f7;
+      margin: 0;
+      padding: 24px;
+      color: #1a1a1a;
+    }
+    h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: 0.01em; }
+    .app-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-bottom: 18px;
+      margin-bottom: 22px;
+      border-bottom: 1px solid #e2e4e8;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .back-link {
+      display: inline-block;
+      padding: 8px 14px;
+      border-radius: 6px;
+      background: #eee;
+      color: #333;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .back-link:hover { background: #e2e2e2; }
+    h2 { font-size: 16px; margin: 0 0 12px; }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      gap: 20px;
+      align-items: start;
+    }
+
+    .card {
+      background: white;
+      border-radius: 10px;
+      padding: 18px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+      margin-bottom: 20px;
+    }
+
+    .status-summary {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+    .status-summary .badge { font-size: 14px; padding: 5px 14px; }
+    .status-summary .meta { font-size: 13px; color: #555; }
+    .status-summary .recheck-flag {
+      font-size: 12px;
+      font-weight: 600;
+      padding: 3px 10px;
+      border-radius: 6px;
+      background: #fff2e5;
+      color: #9c4a1a;
+      border: 1px solid #fbd0a5;
+    }
+    .status-summary .recheck-flag.ok { background: #eefcf3; color: #1f7a4d; border-color: #b9ebce; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: white;
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    }
+    th, td { padding: 10px 14px; text-align: left; font-size: 13px; vertical-align: top; }
+    th {
+      background: #fafafa;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      color: #666;
+      border-bottom: 1px solid #eee;
+    }
+    tr:not(:last-child) td { border-bottom: 1px solid #f0f0f0; }
+
+    .badge {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      color: white;
+      text-transform: capitalize;
+    }
+    .badge.red { background: #e53e3e; }
+    .badge.yellow { background: #d69e2e; }
+    .badge.green { background: #38a169; }
+    .badge.black { background: #4a5568; }
+
+    .overdue-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: #fff2e5;
+      color: #9c4a1a;
+      border: 1px solid #fbd0a5;
+      border-radius: 6px;
+      padding: 2px 6px 2px 8px;
+      font-size: 12px;
+      margin: 2px 4px 2px 0;
+    }
+    .overdue-item button {
+      width: auto;
+      margin: 0;
+      padding: 1px 7px;
+      font-size: 11px;
+      background: #dd6b20;
+      border-radius: 4px;
+    }
+    .overdue-item button:hover { background: #c05621; }
+    .none-due { font-size: 12px; color: #aaa; }
+    .empty-state { text-align: center; padding: 30px; color: #999; }
+
+    label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: #555;
+      margin: 12px 0 4px;
+    }
+    label:first-of-type { margin-top: 0; }
+    input[type="text"], input[type="number"] {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+    .hint { font-size: 11px; color: #999; margin-top: 3px; }
+    .radio-row { display: flex; gap: 14px; margin-top: 4px; }
+    .radio-row label { display: flex; align-items: center; gap: 5px; font-size: 13px; font-weight: 500; margin: 0; }
+    .radio-row input { width: auto; }
+    .conditional { display: none; }
+    .conditional.show { display: block; }
+    button {
+      width: 100%;
+      margin-top: 18px;
+      padding: 10px;
+      border: none;
+      border-radius: 6px;
+      background: #2b6cb0;
+      color: white;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover { background: #2c5282; }
+    .form-msg { font-size: 13px; margin-top: 10px; text-align: center; min-height: 18px; }
+    .form-msg.ok { color: #38a169; }
+    .form-msg.err { color: #e53e3e; }
+    .not-found { text-align: center; padding: 60px 20px; color: #999; }
+  </style>
+</head>
+<body>
+  <div class="app-header">
+    <h1 id="patient-title">Patient</h1>
+    <a href="/" class="back-link">&larr; Back to all patients</a>
+  </div>
+
+  <div id="not-found" class="not-found" style="display:none;">Patient not found.</div>
+
+  <div id="page-content" class="layout" style="display:none;">
+    <!-- Left column: forms scoped to this one patient -->
+    <div>
+      <div class="card">
+        <h2>Recheck This Patient</h2>
+        <form id="checkin-form">
+          <label>Can the patient walk?</label>
+          <div class="radio-row">
+            <label><input type="radio" name="can_walk" value="1" required> Yes</label>
+            <label><input type="radio" name="can_walk" value="0"> No</label>
+          </div>
+
+          <div id="rest-of-form" class="conditional">
+            <label>Breathing (initial check)?</label>
+            <div class="radio-row">
+              <label><input type="radio" name="initial_breathing" value="1"> Yes</label>
+              <label><input type="radio" name="initial_breathing" value="0"> No</label>
+            </div>
+
+            <div id="reposition-block" class="conditional">
+              <label>Breathing after airway reposition?</label>
+              <div class="radio-row">
+                <label><input type="radio" name="breathing_after_reposition" value="1"> Yes</label>
+                <label><input type="radio" name="breathing_after_reposition" value="0"> No</label>
+              </div>
+            </div>
+
+            <div id="rate-pulse-block" class="conditional">
+              <label>Breathing rate (breaths/min)</label>
+              <input type="number" id="breathing_rate" min="0" max="80">
+
+              <label>Radial (wrist) pulse present?</label>
+              <div class="radio-row">
+                <label><input type="radio" name="pulse_present" value="1"> Yes</label>
+                <label><input type="radio" name="pulse_present" value="0"> No</label>
+              </div>
+
+              <label>Responds to a simple command?</label>
+              <div class="radio-row">
+                <label><input type="radio" name="responsive" value="1"> Yes</label>
+                <label><input type="radio" name="responsive" value="0"> No</label>
+              </div>
+            </div>
+          </div>
+
+          <label>Injury / Notes (optional)</label>
+          <input type="text" id="notes" placeholder="e.g. suspected leg fracture">
+
+          <label>Override next check-in (minutes) — optional</label>
+          <input type="number" id="next_check_override" min="1" placeholder="Leave blank to use default">
+          <div class="hint">Defaults: Red 10m / Yellow 30m / Green 120m</div>
+
+          <button type="submit">Submit Recheck</button>
+          <div id="form-msg" class="form-msg"></div>
+        </form>
+      </div>
+
+      <div class="card">
+        <h2>Schedule a Treatment</h2>
+        <form id="treatment-form">
+          <label>Treatment</label>
+          <input type="text" id="t_type" list="treatment-datalist" placeholder="e.g. pain meds" required autocomplete="off">
+          <datalist id="treatment-datalist"></datalist>
+
+          <label>Repeat every (minutes)</label>
+          <input type="number" id="t_interval" min="1" placeholder="e.g. 120" required>
+
+          <button type="submit">Add Schedule</button>
+          <div id="treatment-msg" class="form-msg"></div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Right column: current status + history -->
+    <div>
+      <div class="card">
+        <h2>Current Status</h2>
+        <div class="status-summary" id="status-summary"></div>
+      </div>
+
+      <div class="card">
+        <h2>Treatments</h2>
+        <div id="treatments-list"></div>
+      </div>
+
+      <h2 style="margin: 18px 0 12px;">Check History</h2>
+      <table>
+        <thead>
+          <tr><th>Time</th><th>Priority</th><th>Walk</th><th>Breathing</th><th>Rate</th><th>Pulse</th><th>Responsive</th><th>Notes</th></tr>
+        </thead>
+        <tbody id="history-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    const patientId = decodeURIComponent(window.location.pathname.split('/').pop());
+    document.getElementById('patient-title').textContent = 'Patient: ' + patientId;
+
+    // ============ Recheck form (same logic/validation as main dashboard) ============
+    const checkinForm = document.getElementById('checkin-form');
+
+    checkinForm.addEventListener('change', (e) => {
+      if (e.target.name === 'can_walk') {
+        const canWalk = e.target.value === '1';
+        document.getElementById('rest-of-form').classList.toggle('show', !canWalk);
+        if (canWalk) {
+          document.getElementById('reposition-block').classList.remove('show');
+          document.getElementById('rate-pulse-block').classList.remove('show');
+        }
+      }
+      if (e.target.name === 'initial_breathing') {
+        const breathing = e.target.value === '1';
+        document.getElementById('reposition-block').classList.toggle('show', !breathing);
+        document.getElementById('rate-pulse-block').classList.toggle('show', breathing);
+      }
+    });
+
+    function getRadio(name) {
+      const el = checkinForm.querySelector(`input[name="${name}"]:checked`);
+      return el ? parseInt(el.value) : null;
+    }
+
+    function buildCheckinPayload() {
+      const can_walk = getRadio('can_walk');
+      if (can_walk === null) {
+        return { error: '"Can walk" is required.' };
+      }
+
+      const payload = {
+        patient_id: patientId,
+        can_walk,
+        notes: document.getElementById('notes').value.trim() || null,
+        next_check_minutes: document.getElementById('next_check_override').value
+          ? parseInt(document.getElementById('next_check_override').value) : null
+      };
+
+      if (can_walk === 1) {
+        return { payload };
+      }
+
+      const initial_breathing = getRadio('initial_breathing');
+      if (initial_breathing === null) {
+        return { error: 'Please answer the breathing question.' };
+      }
+      payload.initial_breathing = initial_breathing;
+
+      if (initial_breathing === 0) {
+        const reposition = getRadio('breathing_after_reposition');
+        if (reposition === null) {
+          return { error: 'Please answer the airway reposition question.' };
+        }
+        payload.breathing_after_reposition = reposition;
+        return { payload };
+      }
+
+      const rate = document.getElementById('breathing_rate').value;
+      const pulse = getRadio('pulse_present');
+      const responsive = getRadio('responsive');
+      if (!rate || pulse === null || responsive === null) {
+        return { error: 'Please fill in breathing rate, pulse, and responsiveness.' };
+      }
+      payload.breathing_rate = parseInt(rate);
+      payload.pulse_present = pulse;
+      payload.responsive = responsive;
+      return { payload };
+    }
+
+    checkinForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const msg = document.getElementById('form-msg');
+      msg.textContent = ''; msg.className = 'form-msg';
+
+      const { payload, error } = buildCheckinPayload();
+      if (error) {
+        msg.textContent = error;
+        msg.className = 'form-msg err';
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/checkin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Request failed');
+
+        msg.textContent = `Saved — priority: ${data.priority}`;
+        msg.className = 'form-msg ok';
+        checkinForm.reset();
+        document.getElementById('rest-of-form').classList.remove('show');
+        document.getElementById('reposition-block').classList.remove('show');
+        document.getElementById('rate-pulse-block').classList.remove('show');
+        await loadPatient();
+      } catch (err) {
+        msg.textContent = 'Error: ' + err.message;
+        msg.className = 'form-msg err';
+      }
+    });
+
+    // ============ Treatment form (scoped to this patient) ============
+    const treatmentForm = document.getElementById('treatment-form');
+    treatmentForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const msg = document.getElementById('treatment-msg');
+      msg.textContent = ''; msg.className = 'form-msg';
+
+      const payload = {
+        patient_id: patientId,
+        treatment_type: document.getElementById('t_type').value.trim(),
+        interval_minutes: parseInt(document.getElementById('t_interval').value)
+      };
+      if (!payload.treatment_type || !payload.interval_minutes) {
+        msg.textContent = 'All fields are required.';
+        msg.className = 'form-msg err';
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/treatments', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Request failed');
+        msg.textContent = 'Schedule added.';
+        msg.className = 'form-msg ok';
+        document.getElementById('t_type').value = '';
+        document.getElementById('t_interval').value = '';
+        await loadPatient();
+        await refreshTreatmentTypes();
+      } catch (err) {
+        msg.textContent = 'Error: ' + err.message;
+        msg.className = 'form-msg err';
+      }
+    });
+
+    async function refreshTreatmentTypes() {
+      const res = await fetch('/api/treatment-types');
+      const types = await res.json();
+      document.getElementById('treatment-datalist').innerHTML =
+        types.map(t => `<option value="${t}">`).join('');
+    }
+
+    async function markGiven(treatmentId) {
+      await fetch('/api/treatments/given', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ treatment_id: treatmentId })
+      });
+      loadPatient();
+    }
+    window.markGiven = markGiven;
+
+    // ============ Rendering ============
+    function timeAgo(timestamp) {
+      if (!timestamp) return '—';
+      const diffMs = Date.now() - new Date(timestamp.replace(' ', 'T') + 'Z');
+      const mins = Math.round(diffMs / 60000);
+      if (mins < 1) return 'just now';
+      if (mins < 60) return `${mins}m ago`;
+      return `${Math.round(mins/60)}h ${mins%60}m ago`;
+    }
+
+    function yesNo(val) {
+      if (val === null || val === undefined) return '—';
+      return val ? 'Yes' : 'No';
+    }
+
+    function renderStatusSummary(data) {
+      const el = document.getElementById('status-summary');
+      if (!data.priority) {
+        el.innerHTML = `<span class="none-due">No checks recorded yet.</span>`;
+        return;
+      }
+      const recheck = data.recheck || { status: 'n/a', minutes: null };
+      let recheckHtml = '';
+      if (recheck.status === 'overdue') {
+        recheckHtml = `<span class="recheck-flag">Overdue ${recheck.minutes}m</span>`;
+      } else if (recheck.status === 'due_soon') {
+        recheckHtml = `<span class="recheck-flag">Due in ${recheck.minutes}m</span>`;
+      } else if (recheck.status === 'ok') {
+        recheckHtml = `<span class="recheck-flag ok">Next check in ${recheck.minutes}m</span>`;
+      }
+      el.innerHTML = `
+        <span class="badge ${data.priority}">${data.priority}</span>
+        <span class="meta">Last check: ${timeAgo(data.last_check)}</span>
+        ${data.notes ? `<span class="meta">— ${data.notes}</span>` : ''}
+        ${recheckHtml}
+      `;
+    }
+
+    function renderTreatments(data) {
+      const el = document.getElementById('treatments-list');
+      if (!data.treatments || data.treatments.length === 0) {
+        el.innerHTML = `<span class="none-due">No treatments scheduled.</span>`;
+        return;
+      }
+      const overdueIds = new Set((data.overdue_treatments || []).map(t => t.treatment_id));
+      el.innerHTML = data.treatments.map(t => {
+        const isOverdue = overdueIds.has(t.treatment_id);
+        const overdueInfo = (data.overdue_treatments || []).find(o => o.treatment_id === t.treatment_id);
+        if (isOverdue) {
+          const label = overdueInfo.minutes_overdue !== null
+            ? `${t.treatment_type} (+${overdueInfo.minutes_overdue}m overdue)`
+            : `${t.treatment_type} (never given)`;
+          return `<span class="overdue-item">${label} <button onclick="markGiven(${t.treatment_id})">Give</button></span>`;
+        }
+        return `<span class="none-due">${t.treatment_type} — every ${t.interval_minutes}m, last given ${timeAgo(t.last_given)}</span><br>`;
+      }).join('');
+    }
+
+    function renderHistory(checks) {
+      const tbody = document.getElementById('history-body');
+      if (!checks || checks.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="8" class="empty-state">No checks yet</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = checks.map(c => `
+        <tr>
+          <td>${timeAgo(c.timestamp)}</td>
+          <td><span class="badge ${c.priority_result}">${c.priority_result}</span></td>
+          <td>${yesNo(c.can_walk)}</td>
+          <td>${yesNo(c.initial_breathing)}</td>
+          <td>${c.breathing_rate ?? '—'}</td>
+          <td>${yesNo(c.pulse_present)}</td>
+          <td>${yesNo(c.responsive)}</td>
+          <td>${c.notes || '—'}</td>
+        </tr>
+      `).join('');
+    }
+
+    async function loadPatient() {
+      const res = await fetch(`/api/patients/${encodeURIComponent(patientId)}`);
+      if (res.status === 404) {
+        document.getElementById('not-found').style.display = 'block';
+        document.getElementById('page-content').style.display = 'none';
+        return;
+      }
+      const data = await res.json();
+      document.getElementById('not-found').style.display = 'none';
+      document.getElementById('page-content').style.display = 'grid';
+
+      renderStatusSummary(data);
+      renderTreatments(data);
+      renderHistory(data.checks);
+    }
+
+    (async () => {
+      await loadPatient();
+      await refreshTreatmentTypes();
+    })();
+    setInterval(loadPatient, 5000);
+  </script>
+</body>
+</html>
