@@ -11,7 +11,13 @@
       padding: 24px;
       color: #1a1a1a;
     }
-    h1 { margin: 0 0 20px; font-size: 22px; }
+    h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: 0.01em; }
+    .app-header {
+      text-align: center;
+      padding-bottom: 18px;
+      margin-bottom: 22px;
+      border-bottom: 1px solid #e2e4e8;
+    }
     h2 { font-size: 16px; margin: 0 0 12px; }
 
     .layout {
@@ -35,7 +41,7 @@
       gap: 12px;
       margin-bottom: 12px;
     }
-    .summary.ops-row { grid-template-columns: repeat(2, 1fr); margin-bottom: 16px; }
+    .summary.ops-row { grid-template-columns: repeat(3, 1fr); margin-bottom: 16px; }
     .stat-card {
       background: white;
       border-radius: 10px;
@@ -184,17 +190,17 @@
   </style>
 </head>
 <body>
-  <h1>🚑 Triage Dashboard</h1>
+  <div class="app-header"><h1>Triage Dashboard</h1></div>
 
   <div class="layout">
     <!-- Left column: forms -->
     <div>
       <div class="card">
-        <h2>New Patient Check-In</h2>
+        <h2 id="checkin-form-heading">Patient Check-In / Recheck</h2>
         <form id="checkin-form">
           <label>Patient ID</label>
-          <input type="text" id="patient_id" required>
-          <div class="hint">Auto-suggested (F-prefix, dashboard entries only) — edit if needed</div>
+          <input type="text" id="patient_id" list="checkin-patient-datalist" required autocomplete="off">
+          <datalist id="checkin-patient-datalist"></datalist>
 
           <label>Can the patient walk?</label>
           <div class="radio-row">
@@ -238,7 +244,7 @@
           <label>Injury / Notes (optional)</label>
           <input type="text" id="notes" placeholder="e.g. suspected leg fracture">
 
-          <button type="submit">Submit Check-In</button>
+          <button type="submit">Submit</button>
           <div id="form-msg" class="form-msg"></div>
         </form>
       </div>
@@ -247,12 +253,12 @@
         <h2>Schedule a Treatment</h2>
         <form id="treatment-form">
           <label>Patient</label>
-          <select id="t_patient_id" required>
-            <option value="">Select a patient…</option>
-          </select>
+          <input type="text" id="t_patient_id" list="patient-datalist" placeholder="Type or pick a patient ID" required autocomplete="off">
+          <datalist id="patient-datalist"></datalist>
 
           <label>Treatment</label>
-          <input type="text" id="t_type" placeholder="e.g. pain meds" required>
+          <input type="text" id="t_type" list="treatment-datalist" placeholder="e.g. pain meds" required autocomplete="off">
+          <datalist id="treatment-datalist"></datalist>
 
           <label>Repeat every (minutes)</label>
           <input type="number" id="t_interval" min="1" placeholder="e.g. 120" required>
@@ -280,12 +286,15 @@
         <select id="filter-treatment">
           <option value="">All treatments needed</option>
         </select>
+        <label style="display:flex; align-items:center; gap:6px; font-size:13px; font-weight:500; color:#444; margin:0;">
+          <input type="checkbox" id="filter-recheck" style="width:auto;"> Needs recheck
+        </label>
         <button class="clear-btn" id="clear-filters" type="button">Clear filters</button>
       </div>
 
       <table>
         <thead>
-          <tr><th>Patient ID</th><th>Priority</th><th>Injury / Notes</th><th>Last Check</th><th>Treatments Due</th></tr>
+          <tr><th>Patient ID</th><th>Priority</th><th>Injury / Notes</th><th>Last Check</th><th>Vitals Recheck</th><th>Treatments Due</th></tr>
         </thead>
         <tbody id="patients"></tbody>
       </table>
@@ -294,7 +303,7 @@
 
   <script>
     let latestPatients = [];
-    const filters = { search: '', priority: '', treatment: '' };
+    const filters = { search: '', priority: '', treatment: '', recheckOnly: false };
 
     // ============ Check-in form ============
     const checkinForm = document.getElementById('checkin-form');
@@ -391,12 +400,17 @@
       msg.className = 'form-msg';
 
       const payload = {
-        patient_id: document.getElementById('t_patient_id').value,
+        patient_id: document.getElementById('t_patient_id').value.trim(),
         treatment_type: document.getElementById('t_type').value.trim(),
         interval_minutes: parseInt(document.getElementById('t_interval').value)
       };
       if (!payload.patient_id || !payload.treatment_type || !payload.interval_minutes) {
         msg.textContent = 'All fields are required.';
+        msg.className = 'form-msg err';
+        return;
+      }
+      if (!latestPatients.some(p => p.patient_id === payload.patient_id)) {
+        msg.textContent = `No patient with ID "${payload.patient_id}" exists — pick one from the suggestions.`;
         msg.className = 'form-msg err';
         return;
       }
@@ -410,24 +424,43 @@
         if (!res.ok) throw new Error('Request failed');
         msg.textContent = 'Schedule added.';
         msg.className = 'form-msg ok';
+        document.getElementById('t_patient_id').value = '';
         document.getElementById('t_type').value = '';
         document.getElementById('t_interval').value = '';
         refresh();
+        refreshTreatmentTypes();
       } catch (err) {
         msg.textContent = 'Error: ' + err.message;
         msg.className = 'form-msg err';
       }
     });
 
-    function updatePatientDropdown() {
-      const select = document.getElementById('t_patient_id');
-      const current = select.value;
-      const options = latestPatients.map(p => `<option value="${p.patient_id}">${p.patient_id}</option>`).join('');
-      select.innerHTML = '<option value="">Select a patient…</option>' + options;
-      if (latestPatients.some(p => p.patient_id === current)) select.value = current;
+    function updatePatientDatalist() {
+      const options = latestPatients.map(p => `<option value="${p.patient_id}">`).join('');
+      document.getElementById('patient-datalist').innerHTML = options;
+      document.getElementById('checkin-patient-datalist').innerHTML = options;
+    }
+
+    let latestTreatmentTypes = [];
+    async function refreshTreatmentTypes() {
+      const res = await fetch('/api/treatment-types');
+      latestTreatmentTypes = await res.json();
+      document.getElementById('treatment-datalist').innerHTML =
+        latestTreatmentTypes.map(t => `<option value="${t}">`).join('');
     }
 
     // ============ Mark treatment given ============
+    function quickRecheck(patientId) {
+      checkinForm.reset();
+      document.getElementById('rest-of-form').classList.remove('show');
+      document.getElementById('reposition-block').classList.remove('show');
+      document.getElementById('rate-pulse-block').classList.remove('show');
+      document.getElementById('patient_id').value = patientId;
+      document.getElementById('checkin-form-heading').scrollIntoView({ behavior: 'smooth', block: 'center' });
+      document.getElementById('patient_id').focus();
+    }
+    window.quickRecheck = quickRecheck;
+
     async function markGiven(treatmentId) {
       await fetch('/api/treatments/given', {
         method: 'POST',
@@ -451,11 +484,16 @@
       filters.treatment = e.target.value;
       renderTable();
     });
+    document.getElementById('filter-recheck').addEventListener('change', (e) => {
+      filters.recheckOnly = e.target.checked;
+      renderTable();
+    });
     document.getElementById('clear-filters').addEventListener('click', () => {
-      filters.search = ''; filters.priority = ''; filters.treatment = '';
+      filters.search = ''; filters.priority = ''; filters.treatment = ''; filters.recheckOnly = false;
       document.getElementById('filter-search').value = '';
       document.getElementById('filter-priority').value = '';
       document.getElementById('filter-treatment').value = '';
+      document.getElementById('filter-recheck').checked = false;
       renderTable();
     });
 
@@ -479,6 +517,13 @@
       return `${Math.round(mins/60)}h ${mins%60}m ago`;
     }
 
+    function renderRecheck(recheck, patientId) {
+      if (!recheck || recheck.status === 'n/a') return '<span class="none-due">n/a</span>';
+      if (recheck.status === 'overdue') return `<span class="overdue-item">Overdue ${recheck.minutes}m <button onclick="quickRecheck('${patientId}')">Recheck</button></span>`;
+      if (recheck.status === 'due_soon') return `<span class="overdue-item" style="background:#fffbe0;color:#8a6d00;border-color:#f5e08c;">Due in ${recheck.minutes}m <button onclick="quickRecheck('${patientId}')" style="background:#dd9c00;">Recheck</button></span>`;
+      return `<span class="none-due">in ${recheck.minutes}m</span>`;
+    }
+
     function renderTable() {
       let patients = [...latestPatients];
 
@@ -496,10 +541,15 @@
           (p.overdue_treatments || []).some(t => t.treatment_type === filters.treatment)
         );
       }
+      if (filters.recheckOnly) {
+        patients = patients.filter(p =>
+          p.recheck && (p.recheck.status === 'overdue' || p.recheck.status === 'due_soon')
+        );
+      }
 
       const tbody = document.getElementById('patients');
       if (patients.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="5" class="empty-state">No patients match</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="6" class="empty-state">No patients match</td></tr>`;
         return;
       }
 
@@ -520,12 +570,15 @@
             `).join('')
           : `<span class="none-due">—</span>`;
 
+        const recheckHtml = renderRecheck(p.recheck, p.patient_id);
+
         return `
           <tr>
             <td><strong>${p.patient_id}</strong></td>
             <td><span class="badge ${p.priority}">${p.priority}</span></td>
             <td>${notesHtml}</td>
             <td>${timeAgo(p.last_check)}</td>
+            <td>${recheckHtml}</td>
             <td>${overdueHtml}</td>
           </tr>
         `;
@@ -538,9 +591,11 @@
 
       const counts = { red: 0, yellow: 0, green: 0, black: 0 };
       let patientsWithOverdue = 0;
+      let rechecksOverdue = 0;
       latestPatients.forEach(p => {
         if (counts[p.priority] !== undefined) counts[p.priority]++;
         if (p.overdue_treatments && p.overdue_treatments.length > 0) patientsWithOverdue++;
+        if (p.recheck && p.recheck.status === 'overdue') rechecksOverdue++;
       });
 
       document.getElementById('priority-summary').innerHTML = `
@@ -552,15 +607,17 @@
       document.getElementById('ops-summary').innerHTML = `
         <div class="stat-card total"><div class="count">${latestPatients.length}</div><div class="label">Total Patients</div></div>
         <div class="stat-card overdue"><div class="count">${patientsWithOverdue}</div><div class="label">Patients w/ Overdue Treatment</div></div>
+        <div class="stat-card overdue"><div class="count">${rechecksOverdue}</div><div class="label">Vitals Rechecks Overdue</div></div>
       `;
 
-      updatePatientDropdown();
+      updatePatientDatalist();
       updateTreatmentFilterOptions();
       renderTable();
     }
 
     (async () => {
       await refresh();
+      await refreshTreatmentTypes();
       fillSuggestedId();
     })();
     setInterval(refresh, 5000);
