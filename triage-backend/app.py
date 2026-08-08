@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify, send_from_directory
 import sqlite3
+import re
 from datetime import datetime
 
 app = Flask(__name__)
@@ -40,8 +41,13 @@ def validate_checkin(data):
     """Mirrors the frontend's branching validation server-side — never trust
     the client alone. Returns an error string, or None if the payload is valid
     for the branch it's on."""
-    if not data.get("patient_id"):
-        return "patient_id is required"
+    device_number = data.get("device_number")
+
+    if device_number is not None:
+        try:
+            int(device_number)
+        except (ValueError, TypeError):
+            return "device_number must be a number"
     if data.get("can_walk") is None:
         return "can_walk is required"
 
@@ -63,6 +69,29 @@ def validate_checkin(data):
     if data.get("responsive") is None:
         return "responsive is required"
     return None
+
+
+def generate_patient_id(conn, device_number=0):
+    """Generate a new patient ID in the form HDDNNN.
+
+    If device_number is provided, the ID is H{device_number:02d}{sequence:03d}.
+    If no device_number is provided, the online form uses device 0 and creates
+    IDs like H000001.
+    """
+    device_number = int(device_number)
+    prefix = f"H{device_number:02d}"
+    rows = conn.execute(
+        "SELECT patient_id FROM patients WHERE patient_id LIKE ?",
+        (prefix + '%',)
+    ).fetchall()
+
+    max_seq = 0
+    for row in rows:
+        match = re.match(rf"^{re.escape(prefix)}(\d{{3}})$", row["patient_id"])
+        if match:
+            max_seq = max(max_seq, int(match.group(1)))
+
+    return f"{prefix}{max_seq + 1:03d}"
 
 
 def get_overdue_by_patient(conn):
@@ -143,22 +172,28 @@ def checkin():
     )
 
     conn = get_db()
+    patient_id = data.get("patient_id")
+    if not patient_id or str(patient_id).strip() == "":
+        patient_id = generate_patient_id(conn, data.get("device_number", 0))
+    else:
+        patient_id = str(patient_id).strip()
+
     conn.execute(
         "INSERT OR IGNORE INTO patients (patient_id, created_at) VALUES (?, datetime('now'))",
-        (data["patient_id"],)
+        (patient_id,)
     )
     conn.execute("""
         INSERT INTO checks (patient_id, can_walk, initial_breathing,
             breathing_after_reposition, breathing_rate, pulse_present,
             responsive, notes, priority_result, next_check_minutes, timestamp)
         VALUES (?,?,?,?,?,?,?,?,?,?,datetime('now'))
-    """, (data["patient_id"], data["can_walk"], data.get("initial_breathing"),
+    """, (patient_id, data["can_walk"], data.get("initial_breathing"),
           data.get("breathing_after_reposition"), data.get("breathing_rate"),
           data.get("pulse_present"), data.get("responsive"), data.get("notes"),
           priority, data.get("next_check_minutes")))
     conn.commit()
     conn.close()
-    return jsonify({"priority": priority})
+    return jsonify({"priority": priority, "patient_id": patient_id})
 
 
 # --- 2. Assign / move a patient's physical position — ONLY callable once a
