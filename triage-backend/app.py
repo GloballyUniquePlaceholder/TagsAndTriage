@@ -5,47 +5,6 @@ from datetime import datetime
 app = Flask(__name__)
 DB = "triage.db"
 
-# --- Schema note ---
-# If you already created your DB from the earlier schema, run this once to add
-# the new column used for staff-overridden recheck intervals:
-#
-#   ALTER TABLE checks ADD COLUMN next_check_minutes INTEGER;
-#
-# Full schema for reference (new DBs):
-#
-# CREATE TABLE patients (
-#     patient_id TEXT PRIMARY KEY,
-#     zone TEXT,
-#     checked_out_at TEXT,
-#     checkout_reason TEXT,
-#     created_at TEXT
-# );
-#
-# CREATE TABLE checks (
-#     check_id INTEGER PRIMARY KEY AUTOINCREMENT,
-#     patient_id TEXT,
-#     can_walk INTEGER,
-#     initial_breathing INTEGER,
-#     breathing_after_reposition INTEGER,
-#     breathing_rate INTEGER,
-#     pulse_present INTEGER,
-#     responsive INTEGER,
-#     notes TEXT,
-#     priority_result TEXT,
-#     next_check_minutes INTEGER,
-#     timestamp TEXT,
-#     FOREIGN KEY (patient_id) REFERENCES patients(patient_id)
-# );
-#
-# CREATE TABLE treatments (
-#     treatment_id INTEGER PRIMARY KEY AUTOINCREMENT,
-#     patient_id TEXT,
-#     treatment_type TEXT,
-#     interval_minutes INTEGER,
-#     last_given TEXT,
-#     FOREIGN KEY (patient_id) REFERENCES patients(patient_id)
-# );
-
 # Default reassessment intervals by priority — staff can override per-check.
 # NOT a universal clinical standard, just sensible defaults for this system.
 REASSESSMENT_INTERVALS_MIN = {
@@ -97,7 +56,6 @@ def validate_checkin(data):
             return "breathing_after_reposition is required"
         return None
 
-    # initial_breathing is truthy -> need rate, pulse, responsive
     if data.get("breathing_rate") is None:
         return "breathing_rate is required"
     if data.get("pulse_present") is None:
@@ -136,8 +94,7 @@ def get_overdue_by_patient(conn):
 def get_recheck_status(priority, last_check_str, next_check_minutes=None):
     """Computes vitals-recheck status from priority + last check time.
        Uses a staff-entered override interval when present, otherwise falls
-       back to the priority-based default. Derived on read, same pattern as
-       overdue treatments — no separate "due" table needed."""
+       back to the priority-based default."""
     if priority == "black" or priority is None or last_check_str is None:
         return {"status": "n/a", "minutes": None}
 
@@ -157,7 +114,20 @@ def get_recheck_status(priority, last_check_str, next_check_minutes=None):
         return {"status": "ok", "minutes": remaining}
 
 
-# --- 1. Check-in: called when a patient is triaged or rechecked ---
+def zone_mismatch(zone_position, priority):
+    """True if the patient's assigned zone no longer matches their current
+    priority — e.g. they were placed at Yellow-3, then a recheck escalated
+    them to Red. Signals staff to physically move + reassign, not just a
+    data inconsistency to silently ignore."""
+    if not zone_position or not priority:
+        return False
+    current_zone_label = zone_position.split("-")[0].strip().lower()
+    return current_zone_label != priority.lower()
+
+
+# --- 1. Check-in: called when a patient is triaged or rechecked.
+#        Deliberately has NO zone/position field — priority isn't known
+#        until this returns, so a zone can't be chosen before this runs. ---
 @app.route("/api/checkin", methods=["POST"])
 def checkin():
     data = request.json or {}
@@ -191,7 +161,39 @@ def checkin():
     return jsonify({"priority": priority})
 
 
-# --- 2. Schedule a treatment for a patient ---
+# --- 2. Assign / move a patient's physical position — ONLY callable once a
+#        priority exists. Staff supply just a spot number; the zone letter is
+#        derived from the patient's current priority, so it can never be
+#        typed wrong or set before triage happens. ---
+@app.route("/api/assign-position", methods=["POST"])
+def assign_position():
+    data = request.json or {}
+    patient_id = data.get("patient_id")
+    position_number = data.get("position_number")
+    if not patient_id or not position_number:
+        return jsonify({"error": "patient_id and position_number are required"}), 400
+
+    conn = get_db()
+    latest = conn.execute("""
+        SELECT priority_result FROM checks
+        WHERE patient_id = ? ORDER BY timestamp DESC LIMIT 1
+    """, (patient_id,)).fetchone()
+
+    if not latest or not latest["priority_result"]:
+        conn.close()
+        return jsonify({"error": "Patient must be triaged before a zone position can be assigned"}), 400
+
+    zone_label = latest["priority_result"].capitalize()
+    new_position = f"{zone_label}-{position_number}"
+
+    conn.execute("UPDATE patients SET zone_position = ? WHERE patient_id = ?",
+                 (new_position, patient_id))
+    conn.commit()
+    conn.close()
+    return jsonify({"zone_position": new_position})
+
+
+# --- 3. Schedule a treatment for a patient ---
 @app.route("/api/treatments", methods=["POST"])
 def add_treatment():
     data = request.json or {}
@@ -213,7 +215,7 @@ def add_treatment():
     return jsonify({"status": "ok"})
 
 
-# --- 3. Mark a treatment as given ---
+# --- 4. Mark a treatment as given ---
 @app.route("/api/treatments/given", methods=["POST"])
 def mark_treatment_given():
     data = request.json or {}
@@ -229,7 +231,7 @@ def mark_treatment_given():
     return jsonify({"status": "ok"})
 
 
-# --- 4. Distinct treatment types already in use — powers the autocomplete list ---
+# --- 5. Distinct treatment types already in use — powers the autocomplete list ---
 @app.route("/api/treatment-types", methods=["GET"])
 def treatment_types():
     conn = get_db()
@@ -240,12 +242,13 @@ def treatment_types():
     return jsonify([r["treatment_type"] for r in rows])
 
 
-# --- 5. Get all patients, with priority/notes, overdue treatments, and recheck status ---
+# --- 6. Get all patients, with priority/notes/zone, overdue treatments, and recheck status ---
 @app.route("/api/patients", methods=["GET"])
 def get_patients():
     conn = get_db()
     rows = conn.execute("""
         SELECT p.patient_id,
+               p.zone_position AS zone_position,
                c.priority_result AS priority,
                c.timestamp AS last_check,
                c.notes AS notes,
@@ -256,6 +259,7 @@ def get_patients():
             WHERE patient_id = p.patient_id
             ORDER BY timestamp DESC LIMIT 1
         )
+        WHERE p.checked_out_at IS NULL
     """).fetchall()
 
     overdue_by_patient = get_overdue_by_patient(conn)
@@ -266,11 +270,12 @@ def get_patients():
         patient = dict(row)
         patient["overdue_treatments"] = overdue_by_patient.get(row["patient_id"], [])
         patient["recheck"] = get_recheck_status(row["priority"], row["last_check"], row["next_check_minutes"])
+        patient["zone_mismatch"] = zone_mismatch(row["zone_position"], row["priority"])
         result.append(patient)
     return jsonify(result)
 
 
-# --- 6. Get full detail for ONE patient: current status + full check history + treatments ---
+# --- 7. Get full detail for ONE patient: current status + full check history + treatments ---
 @app.route("/api/patients/<patient_id>", methods=["GET"])
 def get_patient_detail(patient_id):
     conn = get_db()
@@ -303,6 +308,8 @@ def get_patient_detail(patient_id):
         "priority": priority,
         "last_check": last_check,
         "notes": notes,
+        "zone_position": patient["zone_position"],
+        "zone_mismatch": zone_mismatch(patient["zone_position"], priority),
         "recheck": get_recheck_status(priority, last_check, next_check_minutes),
         "overdue_treatments": overdue_by_patient.get(patient_id, []),
         "checks": [dict(c) for c in checks],
@@ -310,7 +317,7 @@ def get_patient_detail(patient_id):
     })
 
 
-# --- 7. Serve the dashboards ---
+# --- 8. Serve the dashboards ---
 @app.route("/")
 def dashboard():
     return send_from_directory("static", "dashboard.html")
