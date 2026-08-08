@@ -5,6 +5,15 @@ from datetime import datetime
 app = Flask(__name__)
 DB = "triage.db"
 
+# Prototype reassessment intervals by priority — NOT a universal clinical
+# standard, just sensible defaults for this system. Easy to tune in one place.
+REASSESSMENT_INTERVALS_MIN = {
+    "red": 10,
+    "yellow": 30,
+    "green": 120
+    # "black" intentionally excluded — not applicable
+}
+
 def get_db():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
@@ -34,7 +43,7 @@ def get_overdue_by_patient(conn):
     overdue = {}
     for r in rows:
         if r["last_given"] is None:
-            minutes_overdue = None  # never given yet - always overdue
+            minutes_overdue = None
             is_overdue = True
         else:
             last = datetime.strptime(r["last_given"], "%Y-%m-%d %H:%M:%S")
@@ -48,6 +57,24 @@ def get_overdue_by_patient(conn):
                 "minutes_overdue": minutes_overdue
             })
     return overdue
+
+def get_recheck_status(priority, last_check_str):
+    """Computes vitals-recheck status from priority + last check time.
+       No new table/column needed — derived on read, same pattern as overdue treatments."""
+    if priority == "black" or priority is None or last_check_str is None:
+        return {"status": "n/a", "minutes": None}
+    interval = REASSESSMENT_INTERVALS_MIN.get(priority)
+    if interval is None:
+        return {"status": "n/a", "minutes": None}
+    last_check = datetime.strptime(last_check_str, "%Y-%m-%d %H:%M:%S")
+    elapsed = (datetime.utcnow() - last_check).total_seconds() / 60
+    remaining = round(interval - elapsed)
+    if remaining <= 0:
+        return {"status": "overdue", "minutes": abs(remaining)}
+    elif remaining <= 5:
+        return {"status": "due_soon", "minutes": remaining}
+    else:
+        return {"status": "ok", "minutes": remaining}
 
 # --- 1. Check-in: called when a patient is triaged ---
 @app.route("/api/checkin", methods=["POST"])
@@ -80,6 +107,12 @@ def checkin():
 def add_treatment():
     data = request.json
     conn = get_db()
+    # guard: only allow scheduling for a patient that actually exists
+    exists = conn.execute("SELECT 1 FROM patients WHERE patient_id = ?",
+                           (data["patient_id"],)).fetchone()
+    if not exists:
+        conn.close()
+        return jsonify({"error": "Unknown patient_id"}), 400
     conn.execute("""
         INSERT INTO treatments (patient_id, treatment_type, interval_minutes, last_given)
         VALUES (?, ?, ?, NULL)
@@ -88,7 +121,7 @@ def add_treatment():
     conn.close()
     return jsonify({"status": "ok"})
 
-# --- 3. Mark a treatment as given (resets the overdue clock) ---
+# --- 3. Mark a treatment as given ---
 @app.route("/api/treatments/given", methods=["POST"])
 def mark_treatment_given():
     data = request.json
@@ -101,7 +134,17 @@ def mark_treatment_given():
     conn.close()
     return jsonify({"status": "ok"})
 
-# --- 4. Get all patients, with latest priority/notes + overdue treatment info ---
+# --- 4. Distinct treatment types already in use — powers the autocomplete list ---
+@app.route("/api/treatment-types", methods=["GET"])
+def treatment_types():
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT DISTINCT treatment_type FROM treatments ORDER BY treatment_type"
+    ).fetchall()
+    conn.close()
+    return jsonify([r["treatment_type"] for r in rows])
+
+# --- 5. Get all patients, with priority/notes, overdue treatments, and recheck status ---
 @app.route("/api/patients", methods=["GET"])
 def get_patients():
     conn = get_db()
@@ -125,10 +168,11 @@ def get_patients():
     for row in rows:
         patient = dict(row)
         patient["overdue_treatments"] = overdue_by_patient.get(row["patient_id"], [])
+        patient["recheck"] = get_recheck_status(row["priority"], row["last_check"])
         result.append(patient)
     return jsonify(result)
 
-# --- 5. Serve the dashboard ---
+# --- 6. Serve the dashboard ---
 @app.route("/")
 def dashboard():
     return send_from_directory("static", "dashboard.html")
