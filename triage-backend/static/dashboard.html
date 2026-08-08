@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Triage Dashboard</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, Segoe UI, sans-serif;
+      background: #f4f5f7;
+      margin: 0;
+      padding: 24px;
+      color: #1a1a1a;
+    }
+    h1 { margin: 0 0 20px; font-size: 22px; }
+    h2 { font-size: 16px; margin: 0 0 12px; }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      gap: 20px;
+      align-items: start;
+    }
+
+    .card {
+      background: white;
+      border-radius: 10px;
+      padding: 18px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+      margin-bottom: 20px;
+    }
+
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .summary.ops-row { grid-template-columns: repeat(2, 1fr); margin-bottom: 16px; }
+    .stat-card {
+      background: white;
+      border-radius: 10px;
+      padding: 16px;
+      text-align: center;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+      border-top: 4px solid #ccc;
+    }
+    .stat-card .count { font-size: 26px; font-weight: 700; }
+    .stat-card .label { font-size: 12px; color: #666; margin-top: 4px; }
+    .stat-card.red { border-color: #e53e3e; }
+    .stat-card.yellow { border-color: #ecc94b; }
+    .stat-card.green { border-color: #48bb78; }
+    .stat-card.black { border-color: #4a5568; }
+    .stat-card.total { border-color: #4299e1; }
+    .stat-card.overdue { border-color: #dd6b20; }
+
+    /* --- filter row --- */
+    .filter-row {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 14px;
+      background: white;
+      padding: 12px 14px;
+      border-radius: 10px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .filter-row input, .filter-row select {
+      padding: 7px 10px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+    .filter-row input[type="text"] { flex: 1; min-width: 160px; }
+    .filter-row .clear-btn {
+      width: auto;
+      margin: 0;
+      padding: 7px 12px;
+      font-size: 13px;
+      background: #eee;
+      color: #555;
+    }
+    .filter-row .clear-btn:hover { background: #e2e2e2; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: white;
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    }
+    th, td { padding: 12px 16px; text-align: left; font-size: 14px; vertical-align: top; }
+    th {
+      background: #fafafa;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      color: #666;
+      border-bottom: 1px solid #eee;
+    }
+    tr:not(:last-child) td { border-bottom: 1px solid #f0f0f0; }
+
+    .badge {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      color: white;
+      text-transform: capitalize;
+    }
+    .badge.red { background: #e53e3e; }
+    .badge.yellow { background: #d69e2e; }
+    .badge.green { background: #38a169; }
+    .badge.black { background: #4a5568; }
+
+    .notes-cell { font-size: 13px; color: #555; max-width: 220px; }
+    .notes-cell.empty { color: #bbb; }
+
+    .overdue-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: #fff2e5;
+      color: #9c4a1a;
+      border: 1px solid #fbd0a5;
+      border-radius: 6px;
+      padding: 2px 6px 2px 8px;
+      font-size: 12px;
+      margin: 2px 4px 2px 0;
+    }
+    .overdue-item button {
+      width: auto;
+      margin: 0;
+      padding: 1px 7px;
+      font-size: 11px;
+      background: #dd6b20;
+      border-radius: 4px;
+    }
+    .overdue-item button:hover { background: #c05621; }
+    .none-due { font-size: 12px; color: #aaa; }
+
+    .empty-state { text-align: center; padding: 40px; color: #999; }
+
+    /* --- forms --- */
+    label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: #555;
+      margin: 12px 0 4px;
+    }
+    label:first-of-type { margin-top: 0; }
+    input[type="text"], input[type="number"], select {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+    .hint { font-size: 11px; color: #999; margin-top: 3px; }
+    .radio-row { display: flex; gap: 14px; margin-top: 4px; }
+    .radio-row label { display: flex; align-items: center; gap: 5px; font-size: 13px; font-weight: 500; margin: 0; }
+    .radio-row input { width: auto; }
+    .conditional { display: none; }
+    .conditional.show { display: block; }
+    button {
+      width: 100%;
+      margin-top: 18px;
+      padding: 10px;
+      border: none;
+      border-radius: 6px;
+      background: #2b6cb0;
+      color: white;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover { background: #2c5282; }
+    .form-msg { font-size: 13px; margin-top: 10px; text-align: center; min-height: 18px; }
+    .form-msg.ok { color: #38a169; }
+    .form-msg.err { color: #e53e3e; }
+  </style>
+</head>
+<body>
+  <h1>🚑 Triage Dashboard</h1>
+
+  <div class="layout">
+    <!-- Left column: forms -->
+    <div>
+      <div class="card">
+        <h2>New Patient Check-In</h2>
+        <form id="checkin-form">
+          <label>Patient ID</label>
+          <input type="text" id="patient_id" required>
+          <div class="hint">Auto-suggested (F-prefix, dashboard entries only) — edit if needed</div>
+
+          <label>Can the patient walk?</label>
+          <div class="radio-row">
+            <label><input type="radio" name="can_walk" value="1" required> Yes</label>
+            <label><input type="radio" name="can_walk" value="0"> No</label>
+          </div>
+
+          <div id="rest-of-form" class="conditional">
+            <label>Breathing (initial check)?</label>
+            <div class="radio-row">
+              <label><input type="radio" name="initial_breathing" value="1"> Yes</label>
+              <label><input type="radio" name="initial_breathing" value="0"> No</label>
+            </div>
+
+            <div id="reposition-block" class="conditional">
+              <label>Breathing after airway reposition?</label>
+              <div class="radio-row">
+                <label><input type="radio" name="breathing_after_reposition" value="1"> Yes</label>
+                <label><input type="radio" name="breathing_after_reposition" value="0"> No</label>
+              </div>
+            </div>
+
+            <div id="rate-pulse-block" class="conditional">
+              <label>Breathing rate (breaths/min)</label>
+              <input type="number" id="breathing_rate" min="0" max="80">
+
+              <label>Radial (wrist) pulse present?</label>
+              <div class="radio-row">
+                <label><input type="radio" name="pulse_present" value="1"> Yes</label>
+                <label><input type="radio" name="pulse_present" value="0"> No</label>
+              </div>
+
+              <label>Responds to a simple command?</label>
+              <div class="radio-row">
+                <label><input type="radio" name="responsive" value="1"> Yes</label>
+                <label><input type="radio" name="responsive" value="0"> No</label>
+              </div>
+            </div>
+          </div>
+
+          <label>Injury / Notes (optional)</label>
+          <input type="text" id="notes" placeholder="e.g. suspected leg fracture">
+
+          <button type="submit">Submit Check-In</button>
+          <div id="form-msg" class="form-msg"></div>
+        </form>
+      </div>
+
+      <div class="card">
+        <h2>Schedule a Treatment</h2>
+        <form id="treatment-form">
+          <label>Patient</label>
+          <select id="t_patient_id" required>
+            <option value="">Select a patient…</option>
+          </select>
+
+          <label>Treatment</label>
+          <input type="text" id="t_type" placeholder="e.g. pain meds" required>
+
+          <label>Repeat every (minutes)</label>
+          <input type="number" id="t_interval" min="1" placeholder="e.g. 120" required>
+
+          <button type="submit">Add Schedule</button>
+          <div id="treatment-msg" class="form-msg"></div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Right column: dashboard -->
+    <div>
+      <div class="summary" id="priority-summary"></div>
+      <div class="summary ops-row" id="ops-summary"></div>
+
+      <div class="filter-row">
+        <input type="text" id="filter-search" placeholder="Search patient ID or injury/notes…">
+        <select id="filter-priority">
+          <option value="">All priorities</option>
+          <option value="red">Red</option>
+          <option value="yellow">Yellow</option>
+          <option value="green">Green</option>
+          <option value="black">Black</option>
+        </select>
+        <select id="filter-treatment">
+          <option value="">All treatments needed</option>
+        </select>
+        <button class="clear-btn" id="clear-filters" type="button">Clear filters</button>
+      </div>
+
+      <table>
+        <thead>
+          <tr><th>Patient ID</th><th>Priority</th><th>Injury / Notes</th><th>Last Check</th><th>Treatments Due</th></tr>
+        </thead>
+        <tbody id="patients"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    let latestPatients = [];
+    const filters = { search: '', priority: '', treatment: '' };
+
+    // ============ Check-in form ============
+    const checkinForm = document.getElementById('checkin-form');
+
+    checkinForm.addEventListener('change', (e) => {
+      if (e.target.name === 'can_walk') {
+        const canWalk = e.target.value === '1';
+        document.getElementById('rest-of-form').classList.toggle('show', !canWalk);
+        if (canWalk) {
+          document.getElementById('reposition-block').classList.remove('show');
+          document.getElementById('rate-pulse-block').classList.remove('show');
+        }
+      }
+      if (e.target.name === 'initial_breathing') {
+        const breathing = e.target.value === '1';
+        document.getElementById('reposition-block').classList.toggle('show', !breathing);
+        document.getElementById('rate-pulse-block').classList.toggle('show', breathing);
+      }
+    });
+
+    function nextSuggestedId() {
+      const nums = latestPatients
+        .map(p => p.patient_id.match(/^F(\d+)$/))
+        .filter(Boolean)
+        .map(m => parseInt(m[1]));
+      const next = (nums.length ? Math.max(...nums) : 0) + 1;
+      return 'F' + String(next).padStart(3, '0');
+    }
+
+    function fillSuggestedId() {
+      document.getElementById('patient_id').value = nextSuggestedId();
+    }
+
+    checkinForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const msg = document.getElementById('form-msg');
+      msg.textContent = '';
+      msg.className = 'form-msg';
+
+      const getRadio = (name) => {
+        const el = checkinForm.querySelector(`input[name="${name}"]:checked`);
+        return el ? parseInt(el.value) : null;
+      };
+
+      const patient_id = document.getElementById('patient_id').value.trim();
+      const can_walk = getRadio('can_walk');
+      if (!patient_id || can_walk === null) {
+        msg.textContent = 'Patient ID and "can walk" are required.';
+        msg.className = 'form-msg err';
+        return;
+      }
+
+      const payload = {
+        patient_id,
+        can_walk,
+        initial_breathing: can_walk ? 1 : getRadio('initial_breathing'),
+        breathing_after_reposition: getRadio('breathing_after_reposition'),
+        breathing_rate: document.getElementById('breathing_rate').value
+          ? parseInt(document.getElementById('breathing_rate').value) : null,
+        pulse_present: getRadio('pulse_present'),
+        responsive: getRadio('responsive'),
+        notes: document.getElementById('notes').value.trim() || null
+      };
+
+      try {
+        const res = await fetch('/api/checkin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Request failed');
+
+        msg.textContent = `Saved — priority: ${data.priority}`;
+        msg.className = 'form-msg ok';
+        checkinForm.reset();
+        document.getElementById('rest-of-form').classList.remove('show');
+        document.getElementById('reposition-block').classList.remove('show');
+        document.getElementById('rate-pulse-block').classList.remove('show');
+        await refresh();
+        fillSuggestedId();
+      } catch (err) {
+        msg.textContent = 'Error: ' + err.message;
+        msg.className = 'form-msg err';
+      }
+    });
+
+    // ============ Treatment scheduling form ============
+    const treatmentForm = document.getElementById('treatment-form');
+    treatmentForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const msg = document.getElementById('treatment-msg');
+      msg.textContent = '';
+      msg.className = 'form-msg';
+
+      const payload = {
+        patient_id: document.getElementById('t_patient_id').value,
+        treatment_type: document.getElementById('t_type').value.trim(),
+        interval_minutes: parseInt(document.getElementById('t_interval').value)
+      };
+      if (!payload.patient_id || !payload.treatment_type || !payload.interval_minutes) {
+        msg.textContent = 'All fields are required.';
+        msg.className = 'form-msg err';
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/treatments', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok) throw new Error('Request failed');
+        msg.textContent = 'Schedule added.';
+        msg.className = 'form-msg ok';
+        document.getElementById('t_type').value = '';
+        document.getElementById('t_interval').value = '';
+        refresh();
+      } catch (err) {
+        msg.textContent = 'Error: ' + err.message;
+        msg.className = 'form-msg err';
+      }
+    });
+
+    function updatePatientDropdown() {
+      const select = document.getElementById('t_patient_id');
+      const current = select.value;
+      const options = latestPatients.map(p => `<option value="${p.patient_id}">${p.patient_id}</option>`).join('');
+      select.innerHTML = '<option value="">Select a patient…</option>' + options;
+      if (latestPatients.some(p => p.patient_id === current)) select.value = current;
+    }
+
+    // ============ Mark treatment given ============
+    async function markGiven(treatmentId) {
+      await fetch('/api/treatments/given', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ treatment_id: treatmentId })
+      });
+      refresh();
+    }
+    window.markGiven = markGiven;
+
+    // ============ Filters ============
+    document.getElementById('filter-search').addEventListener('input', (e) => {
+      filters.search = e.target.value.toLowerCase();
+      renderTable();
+    });
+    document.getElementById('filter-priority').addEventListener('change', (e) => {
+      filters.priority = e.target.value;
+      renderTable();
+    });
+    document.getElementById('filter-treatment').addEventListener('change', (e) => {
+      filters.treatment = e.target.value;
+      renderTable();
+    });
+    document.getElementById('clear-filters').addEventListener('click', () => {
+      filters.search = ''; filters.priority = ''; filters.treatment = '';
+      document.getElementById('filter-search').value = '';
+      document.getElementById('filter-priority').value = '';
+      document.getElementById('filter-treatment').value = '';
+      renderTable();
+    });
+
+    function updateTreatmentFilterOptions() {
+      const select = document.getElementById('filter-treatment');
+      const current = select.value;
+      const types = new Set();
+      latestPatients.forEach(p => (p.overdue_treatments || []).forEach(t => types.add(t.treatment_type)));
+      const options = [...types].map(t => `<option value="${t}">${t}</option>`).join('');
+      select.innerHTML = '<option value="">All treatments needed</option>' + options;
+      if (types.has(current)) select.value = current;
+    }
+
+    // ============ Rendering ============
+    function timeAgo(timestamp) {
+      if (!timestamp) return '—';
+      const diffMs = Date.now() - new Date(timestamp.replace(' ', 'T') + 'Z');
+      const mins = Math.round(diffMs / 60000);
+      if (mins < 1) return 'just now';
+      if (mins < 60) return `${mins}m ago`;
+      return `${Math.round(mins/60)}h ${mins%60}m ago`;
+    }
+
+    function renderTable() {
+      let patients = [...latestPatients];
+
+      if (filters.search) {
+        patients = patients.filter(p =>
+          p.patient_id.toLowerCase().includes(filters.search) ||
+          (p.notes && p.notes.toLowerCase().includes(filters.search))
+        );
+      }
+      if (filters.priority) {
+        patients = patients.filter(p => p.priority === filters.priority);
+      }
+      if (filters.treatment) {
+        patients = patients.filter(p =>
+          (p.overdue_treatments || []).some(t => t.treatment_type === filters.treatment)
+        );
+      }
+
+      const tbody = document.getElementById('patients');
+      if (patients.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="5" class="empty-state">No patients match</td></tr>`;
+        return;
+      }
+
+      const order = { red: 0, yellow: 1, green: 2, black: 3 };
+      patients.sort((a, b) => (order[a.priority] ?? 9) - (order[b.priority] ?? 9));
+
+      tbody.innerHTML = patients.map(p => {
+        const notesHtml = p.notes
+          ? `<div class="notes-cell">${p.notes}</div>`
+          : `<div class="notes-cell empty">—</div>`;
+
+        const overdueHtml = (p.overdue_treatments && p.overdue_treatments.length > 0)
+          ? p.overdue_treatments.map(t => `
+              <span class="overdue-item">
+                ${t.treatment_type}${t.minutes_overdue !== null ? ` (+${t.minutes_overdue}m)` : ' (never given)'}
+                <button onclick="markGiven(${t.treatment_id})">Give</button>
+              </span>
+            `).join('')
+          : `<span class="none-due">—</span>`;
+
+        return `
+          <tr>
+            <td><strong>${p.patient_id}</strong></td>
+            <td><span class="badge ${p.priority}">${p.priority}</span></td>
+            <td>${notesHtml}</td>
+            <td>${timeAgo(p.last_check)}</td>
+            <td>${overdueHtml}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    async function refresh() {
+      const res = await fetch('/api/patients');
+      latestPatients = await res.json();
+
+      const counts = { red: 0, yellow: 0, green: 0, black: 0 };
+      let patientsWithOverdue = 0;
+      latestPatients.forEach(p => {
+        if (counts[p.priority] !== undefined) counts[p.priority]++;
+        if (p.overdue_treatments && p.overdue_treatments.length > 0) patientsWithOverdue++;
+      });
+
+      document.getElementById('priority-summary').innerHTML = `
+        <div class="stat-card red"><div class="count">${counts.red}</div><div class="label">🔴 Red</div></div>
+        <div class="stat-card yellow"><div class="count">${counts.yellow}</div><div class="label">🟡 Yellow</div></div>
+        <div class="stat-card green"><div class="count">${counts.green}</div><div class="label">🟢 Green</div></div>
+        <div class="stat-card black"><div class="count">${counts.black}</div><div class="label">⚫ Black</div></div>
+      `;
+      document.getElementById('ops-summary').innerHTML = `
+        <div class="stat-card total"><div class="count">${latestPatients.length}</div><div class="label">Total Patients</div></div>
+        <div class="stat-card overdue"><div class="count">${patientsWithOverdue}</div><div class="label">Patients w/ Overdue Treatment</div></div>
+      `;
+
+      updatePatientDropdown();
+      updateTreatmentFilterOptions();
+      renderTable();
+    }
+
+    (async () => {
+      await refresh();
+      fillSuggestedId();
+    })();
+    setInterval(refresh, 5000);
+  </script>
+</body>
+</html>
