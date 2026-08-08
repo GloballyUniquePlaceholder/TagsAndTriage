@@ -222,9 +222,9 @@
         <h2 id="checkin-form-heading">Patient Check-In / Recheck</h2>
         <form id="checkin-form">
           <label>Patient ID</label>
-          <input type="text" id="patient_id" list="checkin-patient-datalist" required autocomplete="off">
+          <input type="text" id="patient_id" list="checkin-patient-datalist" autocomplete="off" placeholder="Leave blank to auto-generate">
           <datalist id="checkin-patient-datalist"></datalist>
-          <div class="hint">Zone position is assigned separately, after priority is calculated below</div>
+          <div class="hint">Leave blank to auto-generate a new patient ID for a first-time check-in. Zone position is assigned separately, after priority is calculated below.</div>
 
           <label>Can the patient walk?</label>
           <div class="radio-row">
@@ -352,17 +352,8 @@
       }
     });
 
-    function nextSuggestedId() {
-      const nums = latestPatients
-        .map(p => p.patient_id.match(/^F(\d+)$/))
-        .filter(Boolean)
-        .map(m => parseInt(m[1]));
-      const next = (nums.length ? Math.max(...nums) : 0) + 1;
-      return 'F' + String(next).padStart(3, '0');
-    }
-
     function fillSuggestedId() {
-      document.getElementById('patient_id').value = nextSuggestedId();
+      document.getElementById('patient_id').value = '';
     }
 
     function getRadio(name) {
@@ -374,17 +365,20 @@
       const patient_id = document.getElementById('patient_id').value.trim();
       const can_walk = getRadio('can_walk');
 
-      if (!patient_id || can_walk === null) {
-        return { error: 'Patient ID and "can walk" are required.' };
+      if (can_walk === null) {
+        return { error: 'The "can walk" question is required.' };
       }
 
       const payload = {
-        patient_id,
         can_walk,
         notes: document.getElementById('notes').value.trim() || null,
         next_check_minutes: document.getElementById('next_check_override').value
           ? parseInt(document.getElementById('next_check_override').value) : null
       };
+
+      if (patient_id) {
+        payload.patient_id = patient_id;
+      }
 
       if (can_walk === 1) {
         return { payload };
@@ -439,12 +433,16 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Request failed');
 
-        msg.textContent = `Saved — priority: ${data.priority}. Assign a zone position from the table now if needed.`;
+        const originalPatientId = document.getElementById('patient_id').value.trim();
+        msg.textContent = `Saved — priority: ${data.priority}. Patient ID: ${data.patient_id}. Assign a zone position from the table now if needed.`;
         msg.className = 'form-msg ok';
         checkinForm.reset();
         document.getElementById('rest-of-form').classList.remove('show');
         document.getElementById('reposition-block').classList.remove('show');
         document.getElementById('rate-pulse-block').classList.remove('show');
+        if (!originalPatientId) {
+          document.getElementById('patient_id').value = data.patient_id;
+        }
         await refresh();
         fillSuggestedId();
       } catch (err) {
