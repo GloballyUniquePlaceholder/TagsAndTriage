@@ -59,7 +59,6 @@
     .stat-card.total { border-color: #4299e1; }
     .stat-card.overdue { border-color: #dd6b20; }
 
-    /* --- filter row --- */
     .filter-row {
       display: flex;
       gap: 10px;
@@ -106,6 +105,7 @@
       border-bottom: 1px solid #eee;
     }
     tr:not(:last-child) td { border-bottom: 1px solid #f0f0f0; }
+    tr.patient-row:hover { background: #fafcff; }
 
     .badge {
       display: inline-block;
@@ -149,7 +149,6 @@
 
     .empty-state { text-align: center; padding: 40px; color: #999; }
 
-    /* --- forms --- */
     label {
       display: block;
       font-size: 12px;
@@ -244,6 +243,10 @@
           <label>Injury / Notes (optional)</label>
           <input type="text" id="notes" placeholder="e.g. suspected leg fracture">
 
+          <label>Override next check-in (minutes) — optional</label>
+          <input type="number" id="next_check_override" min="1" placeholder="Leave blank to use default">
+          <div class="hint">Defaults: Red 10m / Yellow 30m / Green 120m</div>
+
           <button type="submit">Submit</button>
           <div id="form-msg" class="form-msg"></div>
         </form>
@@ -337,36 +340,74 @@
       document.getElementById('patient_id').value = nextSuggestedId();
     }
 
+    function getRadio(name) {
+      const el = checkinForm.querySelector(`input[name="${name}"]:checked`);
+      return el ? parseInt(el.value) : null;
+    }
+
+    // Builds the payload AND validates it matches the branch the form is
+    // actually on — this is what stops an unanswered breathing question from
+    // silently being read as "No" and producing Black by accident.
+    function buildCheckinPayload() {
+      const msg = document.getElementById('form-msg');
+      const patient_id = document.getElementById('patient_id').value.trim();
+      const can_walk = getRadio('can_walk');
+
+      if (!patient_id || can_walk === null) {
+        return { error: 'Patient ID and "can walk" are required.' };
+      }
+
+      const payload = {
+        patient_id,
+        can_walk,
+        notes: document.getElementById('notes').value.trim() || null,
+        next_check_minutes: document.getElementById('next_check_override').value
+          ? parseInt(document.getElementById('next_check_override').value) : null
+      };
+
+      if (can_walk === 1) {
+        return { payload }; // Green — no further questions needed
+      }
+
+      const initial_breathing = getRadio('initial_breathing');
+      if (initial_breathing === null) {
+        return { error: 'Please answer the breathing question.' };
+      }
+      payload.initial_breathing = initial_breathing;
+
+      if (initial_breathing === 0) {
+        const reposition = getRadio('breathing_after_reposition');
+        if (reposition === null) {
+          return { error: 'Please answer the airway reposition question.' };
+        }
+        payload.breathing_after_reposition = reposition;
+        return { payload };
+      }
+
+      const rate = document.getElementById('breathing_rate').value;
+      const pulse = getRadio('pulse_present');
+      const responsive = getRadio('responsive');
+      if (!rate || pulse === null || responsive === null) {
+        return { error: 'Please fill in breathing rate, pulse, and responsiveness.' };
+      }
+      payload.breathing_rate = parseInt(rate);
+      payload.pulse_present = pulse;
+      payload.responsive = responsive;
+      return { payload };
+    }
+
     checkinForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       const msg = document.getElementById('form-msg');
       msg.textContent = '';
       msg.className = 'form-msg';
 
-      const getRadio = (name) => {
-        const el = checkinForm.querySelector(`input[name="${name}"]:checked`);
-        return el ? parseInt(el.value) : null;
-      };
-
-      const patient_id = document.getElementById('patient_id').value.trim();
-      const can_walk = getRadio('can_walk');
-      if (!patient_id || can_walk === null) {
-        msg.textContent = 'Patient ID and "can walk" are required.';
+      const { payload, error } = buildCheckinPayload();
+      if (error) {
+        msg.textContent = error;
         msg.className = 'form-msg err';
         return;
       }
-
-      const payload = {
-        patient_id,
-        can_walk,
-        initial_breathing: can_walk ? 1 : getRadio('initial_breathing'),
-        breathing_after_reposition: getRadio('breathing_after_reposition'),
-        breathing_rate: document.getElementById('breathing_rate').value
-          ? parseInt(document.getElementById('breathing_rate').value) : null,
-        pulse_present: getRadio('pulse_present'),
-        responsive: getRadio('responsive'),
-        notes: document.getElementById('notes').value.trim() || null
-      };
 
       try {
         const res = await fetch('/api/checkin', {
@@ -449,19 +490,20 @@
         latestTreatmentTypes.map(t => `<option value="${t}">`).join('');
     }
 
-    // ============ Mark treatment given ============
-    function quickRecheck(patientId) {
-      checkinForm.reset();
-      document.getElementById('rest-of-form').classList.remove('show');
-      document.getElementById('reposition-block').classList.remove('show');
-      document.getElementById('rate-pulse-block').classList.remove('show');
-      document.getElementById('patient_id').value = patientId;
-      document.getElementById('checkin-form-heading').scrollIntoView({ behavior: 'smooth', block: 'center' });
-      document.getElementById('patient_id').focus();
+    // ============ Row navigation / quick actions ============
+    function goToPatient(patientId) {
+      window.location.href = `/patient/${encodeURIComponent(patientId)}`;
+    }
+    window.goToPatient = goToPatient;
+
+    function quickRecheck(event, patientId) {
+      event.stopPropagation();
+      goToPatient(patientId);
     }
     window.quickRecheck = quickRecheck;
 
-    async function markGiven(treatmentId) {
+    async function markGiven(event, treatmentId) {
+      event.stopPropagation();
       await fetch('/api/treatments/given', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -519,8 +561,8 @@
 
     function renderRecheck(recheck, patientId) {
       if (!recheck || recheck.status === 'n/a') return '<span class="none-due">n/a</span>';
-      if (recheck.status === 'overdue') return `<span class="overdue-item">Overdue ${recheck.minutes}m <button onclick="quickRecheck('${patientId}')">Recheck</button></span>`;
-      if (recheck.status === 'due_soon') return `<span class="overdue-item" style="background:#fffbe0;color:#8a6d00;border-color:#f5e08c;">Due in ${recheck.minutes}m <button onclick="quickRecheck('${patientId}')" style="background:#dd9c00;">Recheck</button></span>`;
+      if (recheck.status === 'overdue') return `<span class="overdue-item">Overdue ${recheck.minutes}m <button onclick="quickRecheck(event, '${patientId}')">Recheck</button></span>`;
+      if (recheck.status === 'due_soon') return `<span class="overdue-item" style="background:#fffbe0;color:#8a6d00;border-color:#f5e08c;">Due in ${recheck.minutes}m <button onclick="quickRecheck(event, '${patientId}')" style="background:#dd9c00;">Recheck</button></span>`;
       return `<span class="none-due">in ${recheck.minutes}m</span>`;
     }
 
@@ -565,7 +607,7 @@
           ? p.overdue_treatments.map(t => `
               <span class="overdue-item">
                 ${t.treatment_type}${t.minutes_overdue !== null ? ` (+${t.minutes_overdue}m)` : ' (never given)'}
-                <button onclick="markGiven(${t.treatment_id})">Give</button>
+                <button onclick="markGiven(event, ${t.treatment_id})">Give</button>
               </span>
             `).join('')
           : `<span class="none-due">—</span>`;
@@ -573,7 +615,7 @@
         const recheckHtml = renderRecheck(p.recheck, p.patient_id);
 
         return `
-          <tr>
+          <tr class="patient-row" onclick="goToPatient('${p.patient_id}')">
             <td><strong>${p.patient_id}</strong></td>
             <td><span class="badge ${p.priority}">${p.priority}</span></td>
             <td>${notesHtml}</td>

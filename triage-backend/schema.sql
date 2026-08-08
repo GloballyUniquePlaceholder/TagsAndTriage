@@ -29,3 +29,5 @@ CREATE TABLE treatments (
     last_given TEXT,
     FOREIGN KEY (patient_id) REFERENCES patients(patient_id)
 );
+
+ALTER TABLE checks ADD COLUMN next_check_minutes INTEGER;
