@@ -79,6 +79,16 @@
       color: #b83280;
       border: 1px solid #f3c6de;
     }
+    .conflict-tag {
+      display: inline-block;
+      font-size: 12px;
+      font-weight: 600;
+      color: #6b46c1;
+      background: #f2e9fc;
+      border: 1px solid #dcc6f5;
+      border-radius: 6px;
+      padding: 3px 10px;
+    }
 
     .zone-tag {
       display: inline-block;
@@ -200,6 +210,7 @@
     .form-msg { font-size: 13px; margin-top: 10px; text-align: center; min-height: 18px; }
     .form-msg.ok { color: #38a169; }
     .form-msg.err { color: #e53e3e; }
+    .form-msg.warn { color: #6b46c1; }
     .not-found { text-align: center; padding: 60px 20px; color: #999; }
   </style>
 </head>
@@ -501,10 +512,16 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Request failed');
 
-        msg.textContent = data.physical_match === false
-          ? 'Logged — WARNING: scanned zone doesn\'t match this patient\'s priority.'
-          : 'Logged.';
-        msg.className = 'form-msg ok';
+        if (data.physical_match === false) {
+          msg.textContent = 'Logged — WARNING: scanned zone doesn\'t match this patient\'s priority.';
+          msg.className = 'form-msg warn';
+        } else if (data.occupied_by && data.occupied_by.length > 0) {
+          msg.textContent = `Logged — note: shared with ${data.occupied_by.join(', ')}. Confirm they've actually left.`;
+          msg.className = 'form-msg warn';
+        } else {
+          msg.textContent = 'Logged.';
+          msg.className = 'form-msg ok';
+        }
         document.getElementById('rs_position').value = '';
         await loadPatient();
       } catch (err) {
@@ -543,6 +560,9 @@
         alert(data.error || 'Could not assign position.');
         return;
       }
+      if (data.occupied_by && data.occupied_by.length > 0) {
+        alert(`Note: ${data.zone_position} is also currently assigned to ${data.occupied_by.join(', ')}. That's fine if they've already left the spot — otherwise, confirm before treating this as their sole location.`);
+      }
       loadPatient();
     }
     window.assignPosition = assignPosition;
@@ -569,18 +589,22 @@
       if (!data.priority) {
         return `<span class="zone-tag empty">assign a priority first</span>`;
       }
+      let mainTag;
       if (data.physical_mismatch) {
-        return `<span class="zone-tag urgent">${data.zone_position || '(unassigned)'} ⚠ MOVE NOW — rover confirmed wrong zone</span>
-                <button class="zone-action-btn" onclick="assignPosition()">Move</button>`;
+        mainTag = `<span class="zone-tag urgent">${data.zone_position || '(unassigned)'} ⚠ MOVE NOW — rover confirmed wrong zone</span>`;
+      } else if (!data.zone_position) {
+        mainTag = `<span class="zone-tag empty">not assigned</span>`;
+      } else {
+        const mismatchClass = data.zone_mismatch ? ' mismatch' : '';
+        const label = data.zone_mismatch ? `${data.zone_position} ⚠ priority changed` : data.zone_position;
+        mainTag = `<span class="zone-tag${mismatchClass}">${label}</span>`;
       }
-      if (!data.zone_position) {
-        return `<span class="zone-tag empty">not assigned</span>
-                <button class="zone-action-btn" onclick="assignPosition()">Assign position</button>`;
-      }
-      const mismatchClass = data.zone_mismatch ? ' mismatch' : '';
-      const label = data.zone_mismatch ? `${data.zone_position} ⚠ priority changed` : data.zone_position;
-      return `<span class="zone-tag${mismatchClass}">${label}</span>
-              <button class="zone-action-btn" onclick="assignPosition()">Move</button>`;
+      const conflictTag = data.position_conflict
+        ? `<span class="conflict-tag" title="Also currently assigned to: ${data.conflict_with.join(', ')}">⚠ shared spot with ${data.conflict_with.join(', ')}</span>`
+        : '';
+      const actionLabel = data.zone_position ? 'Move' : 'Assign position';
+      return `${mainTag}${conflictTag}
+              <button class="zone-action-btn" onclick="assignPosition()">${actionLabel}</button>`;
     }
 
     function renderSighting(data) {
