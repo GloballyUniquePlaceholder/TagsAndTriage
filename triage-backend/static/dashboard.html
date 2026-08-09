@@ -19,6 +19,7 @@
       border-bottom: 1px solid #e2e4e8;
     }
     h2 { font-size: 16px; margin: 0 0 12px; }
+    .card-subtitle { font-size: 11px; color: #999; margin: -8px 0 12px; }
 
     .layout {
       display: grid;
@@ -34,6 +35,7 @@
       box-shadow: 0 1px 3px rgba(0,0,0,0.08);
       margin-bottom: 20px;
     }
+    .card.test-tool { border: 1px dashed #cbd5e0; background: #fafbfc; }
 
     .summary {
       display: grid;
@@ -41,7 +43,7 @@
       gap: 12px;
       margin-bottom: 12px;
     }
-    .summary.ops-row { grid-template-columns: repeat(3, 1fr); margin-bottom: 16px; }
+    .summary.ops-row { grid-template-columns: repeat(4, 1fr); margin-bottom: 16px; }
     .stat-card {
       background: white;
       border-radius: 10px;
@@ -58,6 +60,7 @@
     .stat-card.black { border-color: #4a5568; }
     .stat-card.total { border-color: #4299e1; }
     .stat-card.overdue { border-color: #dd6b20; }
+    .stat-card.missing { border-color: #b83280; }
 
     .filter-row {
       display: flex;
@@ -106,6 +109,7 @@
     }
     tr:not(:last-child) td { border-bottom: 1px solid #f0f0f0; }
     tr.patient-row:hover { background: #fafcff; }
+    tr.patient-row.urgent-row { background: #fff5f5; }
 
     .badge {
       display: inline-block;
@@ -134,6 +138,7 @@
     }
     .zone-tag.empty { color: #bbb; background: #f5f5f5; border-color: #eee; font-weight: 500; }
     .zone-tag.mismatch { color: #9c4a1a; background: #fff2e5; border-color: #fbd0a5; }
+    .zone-tag.urgent { color: #fff; background: #c53030; border-color: #9b2c2c; }
     .zone-action-btn {
       width: auto;
       margin: 0;
@@ -145,7 +150,12 @@
     }
     .zone-action-btn:hover { background: #e2e2e2; }
 
-    .notes-cell { font-size: 13px; color: #555; max-width: 220px; }
+    .sighting-cell { font-size: 12px; }
+    .sighting-ok { color: #555; }
+    .sighting-missing { color: #b83280; font-weight: 600; }
+    .sighting-never { color: #999; font-style: italic; }
+
+    .notes-cell { font-size: 13px; color: #555; max-width: 200px; }
     .notes-cell.empty { color: #bbb; }
 
     .overdue-item {
@@ -207,6 +217,8 @@
       cursor: pointer;
     }
     button:hover { background: #2c5282; }
+    .test-tool button { background: #718096; }
+    .test-tool button:hover { background: #4a5568; }
     .form-msg { font-size: 13px; margin-top: 10px; text-align: center; min-height: 18px; }
     .form-msg.ok { color: #38a169; }
     .form-msg.err { color: #e53e3e; }
@@ -295,6 +307,25 @@
           <div id="treatment-msg" class="form-msg"></div>
         </form>
       </div>
+
+      <div class="card test-tool">
+        <h2>Simulate Rover Scan</h2>
+        <div class="card-subtitle">Test tool — a real rover would POST to /api/rover-scan the same way.</div>
+        <form id="rover-scan-form">
+          <label>Rover ID</label>
+          <input type="text" id="rs_rover_id" placeholder="e.g. rover-1" value="rover-1" required>
+
+          <label>Patient</label>
+          <input type="text" id="rs_patient_id" list="patient-datalist" placeholder="Type or pick a patient ID" required autocomplete="off">
+
+          <label>Scanned position (where the rover is right now)</label>
+          <input type="text" id="rs_position" list="zone-datalist" placeholder="e.g. Red-7" required autocomplete="off">
+          <datalist id="zone-datalist"></datalist>
+
+          <button type="submit">Log Scan</button>
+          <div id="rover-scan-msg" class="form-msg"></div>
+        </form>
+      </div>
     </div>
 
     <!-- Right column: dashboard -->
@@ -317,12 +348,15 @@
         <label style="display:flex; align-items:center; gap:6px; font-size:13px; font-weight:500; color:#444; margin:0;">
           <input type="checkbox" id="filter-recheck" style="width:auto;"> Needs recheck
         </label>
+        <label style="display:flex; align-items:center; gap:6px; font-size:13px; font-weight:500; color:#444; margin:0;">
+          <input type="checkbox" id="filter-missing" style="width:auto;"> Not seen recently
+        </label>
         <button class="clear-btn" id="clear-filters" type="button">Clear filters</button>
       </div>
 
       <table>
         <thead>
-          <tr><th>Patient ID</th><th>Priority</th><th>Zone / Spot</th><th>Injury / Notes</th><th>Last Check</th><th>Vitals Recheck</th><th>Treatments Due</th></tr>
+          <tr><th>Patient ID</th><th>Priority</th><th>Zone / Spot</th><th>Last Rover Sighting</th><th>Injury / Notes</th><th>Last Check</th><th>Vitals Recheck</th><th>Treatments Due</th></tr>
         </thead>
         <tbody id="patients"></tbody>
       </table>
@@ -331,7 +365,7 @@
 
   <script>
     let latestPatients = [];
-    const filters = { search: '', priority: '', treatment: '', recheckOnly: false };
+    const filters = { search: '', priority: '', treatment: '', recheckOnly: false, missingOnly: false };
 
     // ============ Check-in form (no zone field — priority isn't known yet) ============
     const checkinForm = document.getElementById('checkin-form');
@@ -351,10 +385,6 @@
         document.getElementById('rate-pulse-block').classList.toggle('show', breathing);
       }
     });
-
-    function fillSuggestedId() {
-      document.getElementById('patient_id').value = '';
-    }
 
     function getRadio(name) {
       const el = checkinForm.querySelector(`input[name="${name}"]:checked`);
@@ -444,7 +474,6 @@
           document.getElementById('patient_id').value = data.patient_id;
         }
         await refresh();
-        fillSuggestedId();
       } catch (err) {
         msg.textContent = 'Error: ' + err.message;
         msg.className = 'form-msg err';
@@ -495,6 +524,47 @@
       }
     });
 
+    // ============ Rover scan simulator ============
+    const roverScanForm = document.getElementById('rover-scan-form');
+    roverScanForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const msg = document.getElementById('rover-scan-msg');
+      msg.textContent = ''; msg.className = 'form-msg';
+
+      const payload = {
+        rover_id: document.getElementById('rs_rover_id').value.trim(),
+        patient_id: document.getElementById('rs_patient_id').value.trim(),
+        scanned_position: document.getElementById('rs_position').value.trim()
+      };
+      if (!payload.rover_id || !payload.patient_id || !payload.scanned_position) {
+        msg.textContent = 'All fields are required.';
+        msg.className = 'form-msg err';
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/rover-scan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Request failed');
+
+        if (data.physical_match === false) {
+          msg.textContent = `Logged — WARNING: scanned zone doesn't match this patient's priority.`;
+        } else {
+          msg.textContent = 'Logged.';
+        }
+        msg.className = 'form-msg ok';
+        document.getElementById('rs_position').value = '';
+        await refresh();
+      } catch (err) {
+        msg.textContent = 'Error: ' + err.message;
+        msg.className = 'form-msg err';
+      }
+    });
+
     function updatePatientDatalist() {
       const options = latestPatients.map(p => `<option value="${p.patient_id}">`).join('');
       document.getElementById('patient-datalist').innerHTML = options;
@@ -506,6 +576,13 @@
       const types = await res.json();
       document.getElementById('treatment-datalist').innerHTML =
         types.map(t => `<option value="${t}">`).join('');
+    }
+
+    function updateZoneDatalist() {
+      const zones = new Set();
+      latestPatients.forEach(p => { if (p.zone_position) zones.add(p.zone_position); });
+      document.getElementById('zone-datalist').innerHTML =
+        [...zones].map(z => `<option value="${z}">`).join('');
     }
 
     // ============ Row navigation / quick actions ============
@@ -520,8 +597,6 @@
     }
     window.quickRecheck = quickRecheck;
 
-    // Only ever called for a patient who already has a priority — the button
-    // that triggers this is only rendered once p.priority is truthy.
     async function assignPosition(event, patientId) {
       event.stopPropagation();
       const positionNumber = window.prompt('Spot number (zone is set automatically from current priority):');
@@ -568,12 +643,18 @@
       filters.recheckOnly = e.target.checked;
       renderTable();
     });
+    document.getElementById('filter-missing').addEventListener('change', (e) => {
+      filters.missingOnly = e.target.checked;
+      renderTable();
+    });
     document.getElementById('clear-filters').addEventListener('click', () => {
-      filters.search = ''; filters.priority = ''; filters.treatment = ''; filters.recheckOnly = false;
+      filters.search = ''; filters.priority = ''; filters.treatment = '';
+      filters.recheckOnly = false; filters.missingOnly = false;
       document.getElementById('filter-search').value = '';
       document.getElementById('filter-priority').value = '';
       document.getElementById('filter-treatment').value = '';
       document.getElementById('filter-recheck').checked = false;
+      document.getElementById('filter-missing').checked = false;
       renderTable();
     });
 
@@ -588,13 +669,16 @@
     }
 
     // ============ Rendering ============
+    function minutesLabel(mins) {
+      if (mins < 1) return 'just now';
+      if (mins < 60) return `${mins}m ago`;
+      return `${Math.floor(mins/60)}h ${mins%60}m ago`;
+    }
+
     function timeAgo(timestamp) {
       if (!timestamp) return '—';
       const diffMs = Date.now() - new Date(timestamp.replace(' ', 'T') + 'Z');
-      const mins = Math.round(diffMs / 60000);
-      if (mins < 1) return 'just now';
-      if (mins < 60) return `${mins}m ago`;
-      return `${Math.round(mins/60)}h ${mins%60}m ago`;
+      return minutesLabel(Math.round(diffMs / 60000));
     }
 
     function renderRecheck(recheck, patientId) {
@@ -605,9 +689,12 @@
     }
 
     function renderZoneCell(p) {
-      // No priority yet -> zone assignment isn't possible; nothing to show.
       if (!p.priority) {
         return `<span class="zone-tag empty">no priority yet</span>`;
+      }
+      if (p.physical_mismatch) {
+        return `<span class="zone-tag urgent" title="A rover physically confirmed this patient is in the wrong zone for their priority">${p.zone_position || '(unassigned)'} ⚠ MOVE NOW</span>
+                <button class="zone-action-btn" onclick="assignPosition(event, '${p.patient_id}')">Move</button>`;
       }
       if (!p.zone_position) {
         return `<span class="zone-tag empty">not assigned</span>
@@ -615,8 +702,18 @@
       }
       const mismatchClass = p.zone_mismatch ? ' mismatch' : '';
       const label = p.zone_mismatch ? `${p.zone_position} ⚠` : p.zone_position;
-      return `<span class="zone-tag${mismatchClass}" title="${p.zone_mismatch ? 'Priority changed since this was assigned — reassign after moving the patient' : ''}">${label}</span>
+      return `<span class="zone-tag${mismatchClass}" title="${p.zone_mismatch ? 'Label does not match current priority — reassign after moving the patient' : ''}">${label}</span>
               <button class="zone-action-btn" onclick="assignPosition(event, '${p.patient_id}')">Move</button>`;
+    }
+
+    function renderSightingCell(p) {
+      if (p.never_scanned) {
+        if (p.minutes_since_seen === null) return `<span class="sighting-cell sighting-never">—</span>`;
+        return `<span class="sighting-cell sighting-never">Never scanned (triaged ${minutesLabel(p.minutes_since_seen)})</span>`;
+      }
+      const cls = p.missing ? 'sighting-missing' : 'sighting-ok';
+      const label = p.missing ? `⚠ Not seen ${minutesLabel(p.minutes_since_seen)}` : `${p.last_seen_zone}, ${minutesLabel(p.minutes_since_seen)}`;
+      return `<span class="sighting-cell ${cls}">${label}</span>`;
     }
 
     function renderTable() {
@@ -642,10 +739,13 @@
           p.recheck && (p.recheck.status === 'overdue' || p.recheck.status === 'due_soon')
         );
       }
+      if (filters.missingOnly) {
+        patients = patients.filter(p => p.missing);
+      }
 
       const tbody = document.getElementById('patients');
       if (patients.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="7" class="empty-state">No patients match</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="8" class="empty-state">No patients match</td></tr>`;
         return;
       }
 
@@ -667,12 +767,14 @@
           : `<span class="none-due">—</span>`;
 
         const recheckHtml = renderRecheck(p.recheck, p.patient_id);
+        const urgentRow = p.physical_mismatch || p.missing ? ' urgent-row' : '';
 
         return `
-          <tr class="patient-row" onclick="goToPatient('${p.patient_id}')">
+          <tr class="patient-row${urgentRow}" onclick="goToPatient('${p.patient_id}')">
             <td><strong>${p.patient_id}</strong></td>
             <td><span class="badge ${p.priority}">${p.priority}</span></td>
             <td><div class="zone-cell">${renderZoneCell(p)}</div></td>
+            <td>${renderSightingCell(p)}</td>
             <td>${notesHtml}</td>
             <td>${timeAgo(p.last_check)}</td>
             <td>${recheckHtml}</td>
@@ -689,10 +791,12 @@
       const counts = { red: 0, yellow: 0, green: 0, black: 0 };
       let patientsWithOverdue = 0;
       let rechecksOverdue = 0;
+      let missingCount = 0;
       latestPatients.forEach(p => {
         if (counts[p.priority] !== undefined) counts[p.priority]++;
         if (p.overdue_treatments && p.overdue_treatments.length > 0) patientsWithOverdue++;
         if (p.recheck && p.recheck.status === 'overdue') rechecksOverdue++;
+        if (p.missing) missingCount++;
       });
 
       document.getElementById('priority-summary').innerHTML = `
@@ -705,9 +809,11 @@
         <div class="stat-card total"><div class="count">${latestPatients.length}</div><div class="label">Total Patients</div></div>
         <div class="stat-card overdue"><div class="count">${patientsWithOverdue}</div><div class="label">Patients w/ Overdue Treatment</div></div>
         <div class="stat-card overdue"><div class="count">${rechecksOverdue}</div><div class="label">Vitals Rechecks Overdue</div></div>
+        <div class="stat-card missing"><div class="count">${missingCount}</div><div class="label">Not Seen Recently</div></div>
       `;
 
       updatePatientDatalist();
+      updateZoneDatalist();
       updateTreatmentFilterOptions();
       renderTable();
     }
@@ -715,7 +821,6 @@
     (async () => {
       await refresh();
       await refreshTreatmentTypes();
-      fillSuggestedId();
     })();
     setInterval(refresh, 5000);
   </script>

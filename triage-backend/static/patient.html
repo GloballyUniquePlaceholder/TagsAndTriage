@@ -34,6 +34,7 @@
     }
     .back-link:hover { background: #e2e2e2; }
     h2 { font-size: 16px; margin: 0 0 12px; }
+    .card-subtitle { font-size: 11px; color: #999; margin: -8px 0 12px; }
 
     .layout {
       display: grid;
@@ -49,6 +50,7 @@
       box-shadow: 0 1px 3px rgba(0,0,0,0.08);
       margin-bottom: 20px;
     }
+    .card.test-tool { border: 1px dashed #cbd5e0; background: #fafbfc; }
 
     .status-summary {
       display: flex;
@@ -68,6 +70,15 @@
       border: 1px solid #fbd0a5;
     }
     .status-summary .recheck-flag.ok { background: #eefcf3; color: #1f7a4d; border-color: #b9ebce; }
+    .status-summary .missing-flag {
+      font-size: 12px;
+      font-weight: 600;
+      padding: 3px 10px;
+      border-radius: 6px;
+      background: #fbe8f2;
+      color: #b83280;
+      border: 1px solid #f3c6de;
+    }
 
     .zone-tag {
       display: inline-block;
@@ -81,6 +92,7 @@
     }
     .zone-tag.empty { color: #bbb; background: #f5f5f5; border-color: #eee; font-weight: 500; }
     .zone-tag.mismatch { color: #9c4a1a; background: #fff2e5; border-color: #fbd0a5; }
+    .zone-tag.urgent { color: #fff; background: #c53030; border-color: #9b2c2c; }
     .zone-action-btn {
       width: auto;
       margin: 0;
@@ -183,6 +195,8 @@
       cursor: pointer;
     }
     button:hover { background: #2c5282; }
+    .test-tool button { background: #718096; }
+    .test-tool button:hover { background: #4a5568; }
     .form-msg { font-size: 13px; margin-top: 10px; text-align: center; min-height: 18px; }
     .form-msg.ok { color: #38a169; }
     .form-msg.err { color: #e53e3e; }
@@ -268,6 +282,21 @@
           <div id="treatment-msg" class="form-msg"></div>
         </form>
       </div>
+
+      <div class="card test-tool">
+        <h2>Simulate Rover Scan</h2>
+        <div class="card-subtitle">Test tool — a real rover would POST this same call automatically.</div>
+        <form id="rover-scan-form">
+          <label>Rover ID</label>
+          <input type="text" id="rs_rover_id" placeholder="e.g. rover-1" value="rover-1" required>
+
+          <label>Scanned position (where the rover is right now)</label>
+          <input type="text" id="rs_position" placeholder="e.g. Red-7" required autocomplete="off">
+
+          <button type="submit">Log Scan</button>
+          <div id="rover-scan-msg" class="form-msg"></div>
+        </form>
+      </div>
     </div>
 
     <!-- Right column: current status + history -->
@@ -288,6 +317,14 @@
           <tr><th>Time</th><th>Priority</th><th>Walk</th><th>Breathing</th><th>Rate</th><th>Pulse</th><th>Responsive</th><th>Notes</th></tr>
         </thead>
         <tbody id="history-body"></tbody>
+      </table>
+
+      <h2 style="margin: 18px 0 12px;">Rover Sighting History</h2>
+      <table>
+        <thead>
+          <tr><th>Time</th><th>Rover</th><th>Position</th></tr>
+        </thead>
+        <tbody id="sightings-body"></tbody>
       </table>
     </div>
   </div>
@@ -437,6 +474,45 @@
       }
     });
 
+    // ============ Rover scan simulator (scoped to this patient) ============
+    const roverScanForm = document.getElementById('rover-scan-form');
+    roverScanForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const msg = document.getElementById('rover-scan-msg');
+      msg.textContent = ''; msg.className = 'form-msg';
+
+      const payload = {
+        rover_id: document.getElementById('rs_rover_id').value.trim(),
+        patient_id: patientId,
+        scanned_position: document.getElementById('rs_position').value.trim()
+      };
+      if (!payload.rover_id || !payload.scanned_position) {
+        msg.textContent = 'All fields are required.';
+        msg.className = 'form-msg err';
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/rover-scan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Request failed');
+
+        msg.textContent = data.physical_match === false
+          ? 'Logged — WARNING: scanned zone doesn\'t match this patient\'s priority.'
+          : 'Logged.';
+        msg.className = 'form-msg ok';
+        document.getElementById('rs_position').value = '';
+        await loadPatient();
+      } catch (err) {
+        msg.textContent = 'Error: ' + err.message;
+        msg.className = 'form-msg err';
+      }
+    });
+
     async function refreshTreatmentTypes() {
       const res = await fetch('/api/treatment-types');
       const types = await res.json();
@@ -454,8 +530,6 @@
     }
     window.markGiven = markGiven;
 
-    // Only rendered when data.priority is truthy — can't be called before a
-    // priority exists, same guard as the main dashboard.
     async function assignPosition() {
       const positionNumber = window.prompt('Spot number (zone is set automatically from current priority):');
       if (!positionNumber) return;
@@ -474,13 +548,16 @@
     window.assignPosition = assignPosition;
 
     // ============ Rendering ============
+    function minutesLabel(mins) {
+      if (mins < 1) return 'just now';
+      if (mins < 60) return `${mins}m ago`;
+      return `${Math.floor(mins/60)}h ${mins%60}m ago`;
+    }
+
     function timeAgo(timestamp) {
       if (!timestamp) return '—';
       const diffMs = Date.now() - new Date(timestamp.replace(' ', 'T') + 'Z');
-      const mins = Math.round(diffMs / 60000);
-      if (mins < 1) return 'just now';
-      if (mins < 60) return `${mins}m ago`;
-      return `${Math.round(mins/60)}h ${mins%60}m ago`;
+      return minutesLabel(Math.round(diffMs / 60000));
     }
 
     function yesNo(val) {
@@ -492,6 +569,10 @@
       if (!data.priority) {
         return `<span class="zone-tag empty">assign a priority first</span>`;
       }
+      if (data.physical_mismatch) {
+        return `<span class="zone-tag urgent">${data.zone_position || '(unassigned)'} ⚠ MOVE NOW — rover confirmed wrong zone</span>
+                <button class="zone-action-btn" onclick="assignPosition()">Move</button>`;
+      }
       if (!data.zone_position) {
         return `<span class="zone-tag empty">not assigned</span>
                 <button class="zone-action-btn" onclick="assignPosition()">Assign position</button>`;
@@ -500,6 +581,16 @@
       const label = data.zone_mismatch ? `${data.zone_position} ⚠ priority changed` : data.zone_position;
       return `<span class="zone-tag${mismatchClass}">${label}</span>
               <button class="zone-action-btn" onclick="assignPosition()">Move</button>`;
+    }
+
+    function renderSighting(data) {
+      if (data.never_scanned) {
+        return `<span class="missing-flag">Never scanned by a rover</span>`;
+      }
+      if (data.missing) {
+        return `<span class="missing-flag">⚠ Not seen ${minutesLabel(data.minutes_since_seen)} (last: ${data.last_seen_zone})</span>`;
+      }
+      return `<span class="meta">Last rover sighting: ${data.last_seen_zone}, ${minutesLabel(data.minutes_since_seen)}</span>`;
     }
 
     function renderStatusSummary(data) {
@@ -523,6 +614,7 @@
         ${data.notes ? `<span class="meta">— ${data.notes}</span>` : ''}
         ${recheckHtml}
         ${renderZone(data)}
+        ${renderSighting(data)}
       `;
     }
 
@@ -566,6 +658,21 @@
       `).join('');
     }
 
+    function renderSightingHistory(sightings) {
+      const tbody = document.getElementById('sightings-body');
+      if (!sightings || sightings.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="3" class="empty-state">No rover scans yet</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = sightings.map(s => `
+        <tr>
+          <td>${timeAgo(s.timestamp)}</td>
+          <td>${s.rover_id}</td>
+          <td>${s.scanned_position}</td>
+        </tr>
+      `).join('');
+    }
+
     async function loadPatient() {
       const res = await fetch(`/api/patients/${encodeURIComponent(patientId)}`);
       if (res.status === 404) {
@@ -580,6 +687,7 @@
       renderStatusSummary(data);
       renderTreatments(data);
       renderHistory(data.checks);
+      renderSightingHistory(data.rover_sightings);
     }
 
     (async () => {

@@ -6,14 +6,77 @@ from datetime import datetime
 app = Flask(__name__)
 DB = "triage.db"
 
-# Default reassessment intervals by priority — staff can override per-check.
-# NOT a universal clinical standard, just sensible defaults for this system.
+# ============================================================
+# SCHEMA (for new DBs). If you already have a triage.db, run the
+# migration block at the bottom of this comment instead of recreating it.
+#
+# CREATE TABLE patients (
+#     patient_id TEXT PRIMARY KEY,
+#     zone_position TEXT,       -- current location, e.g. "Red-7" — set via
+#                                -- /api/assign-position OR auto-refreshed by
+#                                -- a matching rover scan. Never set at check-in.
+#     checked_out_at TEXT,
+#     checkout_reason TEXT,
+#     created_at TEXT
+# );
+#
+# CREATE TABLE checks (
+#     check_id INTEGER PRIMARY KEY AUTOINCREMENT,
+#     patient_id TEXT,
+#     can_walk INTEGER,
+#     initial_breathing INTEGER,
+#     breathing_after_reposition INTEGER,
+#     breathing_rate INTEGER,
+#     pulse_present INTEGER,
+#     responsive INTEGER,
+#     notes TEXT,
+#     priority_result TEXT,
+#     next_check_minutes INTEGER,
+#     timestamp TEXT,
+#     FOREIGN KEY (patient_id) REFERENCES patients(patient_id)
+# );
+#
+# CREATE TABLE treatments (
+#     treatment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+#     patient_id TEXT,
+#     treatment_type TEXT,
+#     interval_minutes INTEGER,
+#     last_given TEXT,
+#     FOREIGN KEY (patient_id) REFERENCES patients(patient_id)
+# );
+#
+# CREATE TABLE rover_scans (
+#     scan_id INTEGER PRIMARY KEY AUTOINCREMENT,
+#     rover_id TEXT,
+#     patient_id TEXT,
+#     scanned_position TEXT,   -- e.g. "Red-7" — wherever the rover was when
+#                               -- it read this patient's tag
+#     timestamp TEXT,
+#     FOREIGN KEY (patient_id) REFERENCES patients(patient_id)
+# );
+#
+# ---- MIGRATION for an existing DB ----
+#   ALTER TABLE patients ADD COLUMN zone_position TEXT;
+#   CREATE TABLE rover_scans (
+#       scan_id INTEGER PRIMARY KEY AUTOINCREMENT,
+#       rover_id TEXT,
+#       patient_id TEXT,
+#       scanned_position TEXT,
+#       timestamp TEXT,
+#       FOREIGN KEY (patient_id) REFERENCES patients(patient_id)
+#   );
+# ============================================================
+
 REASSESSMENT_INTERVALS_MIN = {
     "red": 10,
     "yellow": 30,
     "green": 120
     # "black" intentionally excluded — not applicable
 }
+
+# How long with no rover sighting before a patient is flagged as "not seen
+# recently." A demo default, not a clinical/operational standard — tune freely.
+MISSING_THRESHOLD_MINUTES = 15
 
 
 def get_db():
@@ -42,12 +105,12 @@ def validate_checkin(data):
     the client alone. Returns an error string, or None if the payload is valid
     for the branch it's on."""
     device_number = data.get("device_number")
-
     if device_number is not None:
         try:
             int(device_number)
         except (ValueError, TypeError):
             return "device_number must be a number"
+
     if data.get("can_walk") is None:
         return "can_walk is required"
 
@@ -72,12 +135,7 @@ def validate_checkin(data):
 
 
 def generate_patient_id(conn, device_number=0):
-    """Generate a new patient ID in the form HDDNNN.
-
-    If device_number is provided, the ID is H{device_number:02d}{sequence:03d}.
-    If no device_number is provided, the online form uses device 0 and creates
-    IDs like H000001.
-    """
+    """Generate a new patient ID in the form HDDNNN."""
     device_number = int(device_number)
     prefix = f"H{device_number:02d}"
     rows = conn.execute(
@@ -92,6 +150,16 @@ def generate_patient_id(conn, device_number=0):
             max_seq = max(max_seq, int(match.group(1)))
 
     return f"{prefix}{max_seq + 1:03d}"
+
+
+def zone_letter(s):
+    """Extracts the zone part from a position string like 'Red-7' -> 'red',
+    or from a bare priority like 'Red' -> 'red'. Used to compare "what zone
+    should this patient be in" against "what zone are they actually in"
+    without caring about the specific spot number."""
+    if not s:
+        return None
+    return s.split("-")[0].strip().lower()
 
 
 def get_overdue_by_patient(conn):
@@ -121,9 +189,6 @@ def get_overdue_by_patient(conn):
 
 
 def get_recheck_status(priority, last_check_str, next_check_minutes=None):
-    """Computes vitals-recheck status from priority + last check time.
-       Uses a staff-entered override interval when present, otherwise falls
-       back to the priority-based default."""
     if priority == "black" or priority is None or last_check_str is None:
         return {"status": "n/a", "minutes": None}
 
@@ -144,14 +209,81 @@ def get_recheck_status(priority, last_check_str, next_check_minutes=None):
 
 
 def zone_mismatch(zone_position, priority):
-    """True if the patient's assigned zone no longer matches their current
-    priority — e.g. they were placed at Yellow-3, then a recheck escalated
-    them to Red. Signals staff to physically move + reassign, not just a
-    data inconsistency to silently ignore."""
+    """LABEL mismatch: the assigned zone_position field doesn't match current
+    priority — e.g. staff never clicked 'Move' after a recheck changed the
+    priority. This is a data problem: nothing physically confirmed it either
+    way, it's just an inconsistency in what's recorded."""
     if not zone_position or not priority:
         return False
-    current_zone_label = zone_position.split("-")[0].strip().lower()
-    return current_zone_label != priority.lower()
+    return zone_letter(zone_position) != priority.lower()
+
+
+def get_last_seen_by_patient(conn):
+    """Batch lookup: most recent rover scan per patient.
+    Returns { patient_id: {"zone": scanned_position, "minutes_ago": int} }"""
+    rows = conn.execute("""
+        SELECT rs.patient_id, rs.scanned_position, rs.timestamp
+        FROM rover_scans rs
+        WHERE rs.timestamp = (
+            SELECT MAX(timestamp) FROM rover_scans WHERE patient_id = rs.patient_id
+        )
+    """).fetchall()
+    now = datetime.utcnow()
+    result = {}
+    for r in rows:
+        last = datetime.strptime(r["timestamp"], "%Y-%m-%d %H:%M:%S")
+        result[r["patient_id"]] = {
+            "zone": r["scanned_position"],
+            "minutes_ago": round((now - last).total_seconds() / 60)
+        }
+    return result
+
+
+def build_sighting_status(priority, created_at, last_seen):
+    """Combines rover-sighting data into the fields the dashboard needs:
+    last_seen_zone, minutes_since_seen, never_scanned, missing, physical_mismatch.
+
+    - If a rover has scanned this patient before: baseline is that scan.
+    - If not: baseline is time since they were first triaged (created_at) —
+      so a patient no rover has ever reached still eventually gets flagged,
+      rather than silently never appearing as a concern.
+    - "missing" is skipped for black priority (deceased) — same reasoning
+      as skipping vitals rechecks for that priority.
+    - "physical_mismatch" only applies when we have an actual rover sighting
+      to compare against — never_scanned patients can't have this, since
+      nothing has physically confirmed a wrong location for them (yet)."""
+    now = datetime.utcnow()
+
+    if last_seen:
+        minutes_since_seen = last_seen["minutes_ago"]
+        last_seen_zone = last_seen["zone"]
+        never_scanned = False
+    else:
+        never_scanned = True
+        last_seen_zone = None
+        if created_at:
+            created = datetime.strptime(created_at, "%Y-%m-%d %H:%M:%S")
+            minutes_since_seen = round((now - created).total_seconds() / 60)
+        else:
+            minutes_since_seen = None
+
+    missing = (
+        priority != "black"
+        and minutes_since_seen is not None
+        and minutes_since_seen > MISSING_THRESHOLD_MINUTES
+    )
+
+    physical_mismatch = False
+    if last_seen_zone and priority:
+        physical_mismatch = zone_letter(last_seen_zone) != priority.lower()
+
+    return {
+        "last_seen_zone": last_seen_zone,
+        "minutes_since_seen": minutes_since_seen,
+        "never_scanned": never_scanned,
+        "missing": missing,
+        "physical_mismatch": physical_mismatch
+    }
 
 
 # --- 1. Check-in: called when a patient is triaged or rechecked.
@@ -196,10 +328,8 @@ def checkin():
     return jsonify({"priority": priority, "patient_id": patient_id})
 
 
-# --- 2. Assign / move a patient's physical position — ONLY callable once a
-#        priority exists. Staff supply just a spot number; the zone letter is
-#        derived from the patient's current priority, so it can never be
-#        typed wrong or set before triage happens. ---
+# --- 2. Assign / move a patient's physical position manually — ONLY
+#        callable once a priority exists. ---
 @app.route("/api/assign-position", methods=["POST"])
 def assign_position():
     data = request.json or {}
@@ -228,7 +358,49 @@ def assign_position():
     return jsonify({"zone_position": new_position})
 
 
-# --- 3. Schedule a treatment for a patient ---
+# --- 3. Rover scan: called by (or, for now, simulated on behalf of) a rover
+#        every time it reads a patient's tag while patrolling. ---
+@app.route("/api/rover-scan", methods=["POST"])
+def rover_scan():
+    data = request.json or {}
+    rover_id = data.get("rover_id")
+    patient_id = data.get("patient_id")
+    scanned_position = data.get("scanned_position")
+    if not rover_id or not patient_id or not scanned_position:
+        return jsonify({"error": "rover_id, patient_id, and scanned_position are required"}), 400
+
+    conn = get_db()
+    exists = conn.execute("SELECT 1 FROM patients WHERE patient_id = ?", (patient_id,)).fetchone()
+    if not exists:
+        conn.close()
+        return jsonify({"error": "Unknown patient_id"}), 400
+
+    conn.execute("""
+        INSERT INTO rover_scans (rover_id, patient_id, scanned_position, timestamp)
+        VALUES (?, ?, ?, datetime('now'))
+    """, (rover_id, patient_id, scanned_position))
+
+    # If the physical scan location matches the patient's current priority,
+    # trust the rover over any possibly-stale manual label and refresh it.
+    # If it DOESN'T match, deliberately leave zone_position alone — that gap
+    # is the actual problem, and auto-fixing it would hide a real alert.
+    latest_check = conn.execute("""
+        SELECT priority_result FROM checks WHERE patient_id = ? ORDER BY timestamp DESC LIMIT 1
+    """, (patient_id,)).fetchone()
+    priority = latest_check["priority_result"] if latest_check else None
+    physical_match = None
+    if priority:
+        physical_match = zone_letter(scanned_position) == priority.lower()
+        if physical_match:
+            conn.execute("UPDATE patients SET zone_position = ? WHERE patient_id = ?",
+                         (scanned_position, patient_id))
+
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "ok", "physical_match": physical_match})
+
+
+# --- 4. Schedule a treatment for a patient ---
 @app.route("/api/treatments", methods=["POST"])
 def add_treatment():
     data = request.json or {}
@@ -250,7 +422,7 @@ def add_treatment():
     return jsonify({"status": "ok"})
 
 
-# --- 4. Mark a treatment as given ---
+# --- 5. Mark a treatment as given ---
 @app.route("/api/treatments/given", methods=["POST"])
 def mark_treatment_given():
     data = request.json or {}
@@ -266,7 +438,7 @@ def mark_treatment_given():
     return jsonify({"status": "ok"})
 
 
-# --- 5. Distinct treatment types already in use — powers the autocomplete list ---
+# --- 6. Distinct treatment types already in use — powers the autocomplete list ---
 @app.route("/api/treatment-types", methods=["GET"])
 def treatment_types():
     conn = get_db()
@@ -277,13 +449,15 @@ def treatment_types():
     return jsonify([r["treatment_type"] for r in rows])
 
 
-# --- 6. Get all patients, with priority/notes/zone, overdue treatments, and recheck status ---
+# --- 7. Get all patients, with priority/notes/zone, overdue treatments,
+#        recheck status, and rover-sighting status ---
 @app.route("/api/patients", methods=["GET"])
 def get_patients():
     conn = get_db()
     rows = conn.execute("""
         SELECT p.patient_id,
                p.zone_position AS zone_position,
+               p.created_at AS created_at,
                c.priority_result AS priority,
                c.timestamp AS last_check,
                c.notes AS notes,
@@ -298,6 +472,7 @@ def get_patients():
     """).fetchall()
 
     overdue_by_patient = get_overdue_by_patient(conn)
+    last_seen_by_patient = get_last_seen_by_patient(conn)
     conn.close()
 
     result = []
@@ -306,11 +481,16 @@ def get_patients():
         patient["overdue_treatments"] = overdue_by_patient.get(row["patient_id"], [])
         patient["recheck"] = get_recheck_status(row["priority"], row["last_check"], row["next_check_minutes"])
         patient["zone_mismatch"] = zone_mismatch(row["zone_position"], row["priority"])
+        sighting = build_sighting_status(
+            row["priority"], row["created_at"], last_seen_by_patient.get(row["patient_id"])
+        )
+        patient.update(sighting)
         result.append(patient)
     return jsonify(result)
 
 
-# --- 7. Get full detail for ONE patient: current status + full check history + treatments ---
+# --- 8. Get full detail for ONE patient: current status + full check
+#        history + treatments + rover sighting history ---
 @app.route("/api/patients/<patient_id>", methods=["GET"])
 def get_patient_detail(patient_id):
     conn = get_db()
@@ -328,6 +508,10 @@ def get_patient_detail(patient_id):
     treatments = conn.execute(
         "SELECT * FROM treatments WHERE patient_id = ?", (patient_id,)
     ).fetchall()
+    rover_sightings = conn.execute("""
+        SELECT rover_id, scanned_position, timestamp FROM rover_scans
+        WHERE patient_id = ? ORDER BY timestamp DESC
+    """, (patient_id,)).fetchall()
 
     latest = checks[0] if checks else None
     priority = latest["priority_result"] if latest else None
@@ -336,9 +520,13 @@ def get_patient_detail(patient_id):
     next_check_minutes = latest["next_check_minutes"] if latest else None
 
     overdue_by_patient = get_overdue_by_patient(conn)
+    last_seen_by_patient = get_last_seen_by_patient(conn)
+    sighting = build_sighting_status(
+        priority, patient["created_at"], last_seen_by_patient.get(patient_id)
+    )
     conn.close()
 
-    return jsonify({
+    result = {
         "patient_id": patient_id,
         "priority": priority,
         "last_check": last_check,
@@ -348,11 +536,14 @@ def get_patient_detail(patient_id):
         "recheck": get_recheck_status(priority, last_check, next_check_minutes),
         "overdue_treatments": overdue_by_patient.get(patient_id, []),
         "checks": [dict(c) for c in checks],
-        "treatments": [dict(t) for t in treatments]
-    })
+        "treatments": [dict(t) for t in treatments],
+        "rover_sightings": [dict(s) for s in rover_sightings]
+    }
+    result.update(sighting)
+    return jsonify(result)
 
 
-# --- 8. Serve the dashboards ---
+# --- 9. Serve the dashboards ---
 @app.route("/")
 def dashboard():
     return send_from_directory("static", "dashboard.html")
