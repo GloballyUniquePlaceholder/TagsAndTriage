@@ -163,6 +163,7 @@ def checkin():
 
     error = validate_checkin(data)
     if error:
+        print(error)
         return jsonify({"error": error}), 400
 
     priority = calculate_priority(
